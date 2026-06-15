@@ -1,0 +1,1106 @@
+package jobs
+
+import (
+        "context"
+        "fmt"
+        "os"
+        "os/exec"
+        "path/filepath"
+        "regexp"
+        "sort"
+        "strconv"
+        "strings"
+        "sync"
+        "time"
+
+        "entropy-gui/pkg/cleaner"
+        "entropy-gui/pkg/cmdutil"
+        "entropy-gui/pkg/diskguard"
+        "entropy-gui/pkg/ytdlp"
+
+        "github.com/google/uuid"
+)
+
+// idleJobTimeout is how long a running job can produce no stdout output
+// before the watchdog considers it hung and cancels it.
+const idleJobTimeout = 5 * time.Minute
+
+// logDebounceInterval is how long the log broadcaster waits to batch
+// rapid log lines before flushing to SSE subscribers.
+const logDebounceInterval = 100 * time.Millisecond
+
+type Status string
+
+const (
+        StatusQueued      Status = "queued"
+        StatusSearching   Status = "searching"
+        StatusDownloading Status = "downloading"
+        StatusProcessing  Status = "processing"
+        StatusDone        Status = "done"
+        StatusFailed      Status = "failed"
+        StatusCanceled    Status = "canceled"
+)
+
+type Options struct {
+        Format         string `json:"format"`  // mp3, m4a, flac, opus, wav, mp4 (video), best
+        Bitrate        string `json:"bitrate"` // e.g., "192", "320", "0" for VBR best
+        EmbedMeta      bool   `json:"embed_meta"`
+        EmbedThumb     bool   `json:"embed_thumb"`
+        Engine         string `json:"engine"` // "ytdlp" or "aria2c"
+        OutputDir      string `json:"output_dir"`
+        CookiesBrowser string `json:"cookies_browser"` // "" | chrome | edge | firefox | brave | chromium | opera | safari | vivaldi
+        ScrapeDelay    bool   `json:"scrape_delay"`    // randomized sleep between requests to avoid 429s
+        Resolution     string `json:"resolution"`      // "BEST", "4K", "1440p", "1080p", "720p", "480p"
+        BandwidthLimit string `json:"bandwidth_limit"` // "5M", "1M", "500K", "0" = unlimited
+}
+
+type Job struct {
+        ID         string    `json:"id"`
+        URL        string    `json:"url"`
+        Title      string    `json:"title"`
+        Uploader   string    `json:"uploader"`
+        Thumbnail  string    `json:"thumbnail"`
+        Duration   float64   `json:"duration"`
+        Status     Status    `json:"status"`
+        Progress   float64   `json:"progress"`
+        Speed      string    `json:"speed"`
+        ETA        string    `json:"eta"`
+        Stage      string    `json:"stage"` // human-readable
+        Error      string    `json:"error"`
+        OutputFile string    `json:"output_file"`
+        Options    Options   `json:"options"`
+        CreatedAt  time.Time `json:"created_at"`
+        UpdatedAt  time.Time `json:"updated_at"`
+        cancel     context.CancelFunc
+}
+
+// FIX #3: allowed cookie browsers — validated before passing to yt-dlp.
+var validCookieBrowsers = map[string]bool{
+        "": true, "none": true,
+        "chrome": true, "edge": true, "firefox": true, "brave": true,
+        "chromium": true, "opera": true, "vivaldi": true, "safari": true,
+}
+
+// FIX #7: max concurrent SSE subscriptions.
+const maxSubscriptions = 16
+
+type Event struct {
+        Type string   `json:"type"` // "job", "log", "snapshot"
+        Job  *Job     `json:"job,omitempty"`
+        Log  *LogLine `json:"log,omitempty"`
+        Jobs []*Job   `json:"jobs,omitempty"`
+}
+
+type LogLine struct {
+        JobID string    `json:"job_id"`
+        Line  string    `json:"line"`
+        Time  time.Time `json:"time"`
+}
+
+// Manager owns the job queue and workers.
+type Manager struct {
+        mu            sync.RWMutex
+        jobs          map[string]*Job
+        order         []string
+        queue         chan string
+        closed        bool // set by Close() to prevent new enqueue after shutdown
+        logs          []LogLine
+        subsMu        sync.RWMutex
+        subs          map[string]chan Event
+        ytdlp         string
+        aria2c        string
+        ffmpeg        string
+        output        string
+        workers       int
+        activeWorkers int
+
+        // Global defaults (can be overridden per-job via Options)
+        defaultBandwidth string
+
+        // Persistence
+        saveJob   func(j *Job)
+        deleteJob func(id string)
+
+        // Mutex for file I/O outside the main job lock
+        ioMu sync.Mutex
+
+        // logDebounce: pending log lines and timer for batching broadcasts
+        logDebounceMu     sync.Mutex
+        logPending        []LogLine
+        logDebounceTimer  *time.Timer
+}
+
+func NewManager(ytdlpBin, aria2cBin, ffmpegBin, outputDir string, workers int) *Manager {
+        if workers <= 0 {
+                workers = 2
+        }
+        m := &Manager{
+                jobs:    map[string]*Job{},
+                order:   []string{},
+                queue:   make(chan string, 1024),
+                logs:    make([]LogLine, 0, 1024),
+                subs:    map[string]chan Event{},
+                ytdlp:   ytdlpBin,
+                aria2c:  aria2cBin,
+                ffmpeg:  ffmpegBin,
+                output:  outputDir,
+                workers: workers,
+        }
+        for i := 0; i < workers; i++ {
+                go m.worker()
+        }
+        return m
+}
+
+// Close stops the worker pool. It closes the queue channel so workers
+// drain remaining jobs and then exit. Called during graceful shutdown
+// to prevent goroutine leaks.
+func (m *Manager) Close() {
+        m.mu.Lock()
+        m.closed = true
+        m.mu.Unlock()
+        close(m.queue)
+}
+
+// SetOutput updates the default output directory for new jobs.
+func (m *Manager) SetOutput(dir string) {
+        m.mu.Lock()
+        m.output = dir
+        m.mu.Unlock()
+}
+
+// Workers returns the current max worker count.
+func (m *Manager) Workers() int {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        return m.workers
+}
+
+// SetWorkers updates the maximum concurrent worker count.
+// If the new limit is higher, spawns new workers. If lower, excess workers will naturally exit.
+func (m *Manager) SetWorkers(n int) {
+        if n <= 0 {
+                return
+        }
+        m.mu.Lock()
+        defer m.mu.Unlock()
+        for i := m.activeWorkers; i < n; i++ {
+                go m.worker()
+        }
+        m.workers = n
+}
+
+// Output returns the current default output directory.
+func (m *Manager) Output() string {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        return m.output
+}
+
+// Bandwidth returns the current global default bandwidth limit string.
+func (m *Manager) Bandwidth() string {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        if m.defaultBandwidth == "" {
+                return "5M"
+        }
+        return m.defaultBandwidth
+}
+
+// SetBandwidth updates the global default bandwidth limit.
+func (m *Manager) SetBandwidth(limit string) {
+        m.mu.Lock()
+        defer m.mu.Unlock()
+        m.defaultBandwidth = limit
+}
+
+// AttachPersistence wires a persist callback and seeds jobs from a previous run.
+func (m *Manager) AttachPersistence(save func(j *Job), del func(id string), restored []*Job) {
+        m.mu.Lock()
+        m.saveJob = save
+        m.deleteJob = del
+        for _, j := range restored {
+                if j == nil || j.ID == "" {
+                        continue
+                }
+                switch j.Status {
+                case StatusQueued, StatusSearching, StatusDownloading, StatusProcessing:
+                        j.Status = StatusFailed
+                        j.Error = "interrupted by restart"
+                        j.Stage = "interrupted"
+                }
+                m.jobs[j.ID] = j
+                m.order = append(m.order, j.ID)
+        }
+        m.mu.Unlock()
+}
+
+// --- Subscriptions ---
+
+// Subscribe creates a new SSE subscription. Returns an error if too many
+// concurrent subscriptions exist (FIX #7: prevent memory exhaustion).
+func (m *Manager) Subscribe() (string, chan Event, error) {
+        id := uuid.NewString()
+        ch := make(chan Event, 128)
+        m.subsMu.Lock()
+        defer m.subsMu.Unlock()
+        if len(m.subs) >= maxSubscriptions {
+                return "", nil, fmt.Errorf("too many concurrent subscriptions (max %d)", maxSubscriptions)
+        }
+        m.subs[id] = ch
+        return id, ch, nil
+}
+
+func (m *Manager) Unsubscribe(id string) {
+        m.subsMu.Lock()
+        if ch, ok := m.subs[id]; ok {
+                close(ch)
+                delete(m.subs, id)
+        }
+        m.subsMu.Unlock()
+}
+
+func (m *Manager) broadcast(e Event) {
+        m.subsMu.RLock()
+        defer m.subsMu.RUnlock()
+        for _, ch := range m.subs {
+                select {
+                case ch <- e:
+                default:
+                }
+        }
+}
+
+func (m *Manager) appendLog(jobID, line string) {
+        ll := LogLine{JobID: jobID, Line: line, Time: time.Now()}
+        m.mu.Lock()
+        m.logs = append(m.logs, ll)
+        if len(m.logs) > 5000 {
+                m.logs = m.logs[len(m.logs)-5000:]
+        }
+        m.mu.Unlock()
+
+        // Debounce SSE log broadcasts: batch rapid lines into a single flush
+        // after logDebounceInterval ms to prevent flooding clients during downloads.
+        m.logDebounceMu.Lock()
+        m.logPending = append(m.logPending, ll)
+        if m.logDebounceTimer == nil {
+                m.logDebounceTimer = time.AfterFunc(logDebounceInterval, func() {
+                        m.logDebounceMu.Lock()
+                        pending := m.logPending
+                        m.logPending = nil
+                        m.logDebounceTimer = nil
+                        m.logDebounceMu.Unlock()
+                        // Broadcast each buffered log line
+                        for i := range pending {
+                                lp := pending[i]
+                                m.broadcast(Event{Type: "log", Log: &lp})
+                        }
+                })
+        }
+        m.logDebounceMu.Unlock()
+}
+
+func (m *Manager) updateJob(j *Job) {
+        jc := jobCopy(j)
+        m.broadcast(Event{Type: "job", Job: jc})
+        if m.saveJob != nil {
+                // we pass the raw job since jc is disconnected from mutexes, but wait, saveJob handles JSON marshaling
+                // let's pass jc so it has the current state copy safely
+                m.saveJob(jc)
+        }
+}
+
+// --- Public API ---
+
+func (m *Manager) List() []*Job {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        out := make([]*Job, 0, len(m.order))
+        for _, id := range m.order {
+                if j, ok := m.jobs[id]; ok {
+                        cp := *j
+                        out = append(out, &cp)
+                }
+        }
+        return out
+}
+
+func (m *Manager) RecentLogs(limit int) []LogLine {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        if limit <= 0 || limit > len(m.logs) {
+                limit = len(m.logs)
+        }
+        cp := make([]LogLine, limit)
+        copy(cp, m.logs[len(m.logs)-limit:])
+        return cp
+}
+
+// IsDuplicateURL returns true if the URL was already downloaded successfully.
+// Exported for use by the import endpoint in main.go.
+func (m *Manager) IsDuplicateURL(u string) bool {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        for _, id := range m.order {
+                j, ok := m.jobs[id]
+                if !ok || j.Status != StatusDone {
+                        continue
+                }
+                if j.URL == u {
+                        return true
+                }
+        }
+        return false
+}
+
+// DuplicateCount returns how many URLs in the given list already exist as done jobs.
+// Uses a set for O(n) lookup instead of O(n²).
+func (m *Manager) DuplicateCount(urls []string) int {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        // Build a set of done-job URLs
+        doneURLs := make(map[string]struct{}, len(m.order))
+        for _, id := range m.order {
+                j, ok := m.jobs[id]
+                if !ok || j.Status != StatusDone {
+                        continue
+                }
+                doneURLs[j.URL] = struct{}{}
+        }
+        count := 0
+        for _, u := range urls {
+                if _, ok := doneURLs[u]; ok {
+                        count++
+                }
+        }
+        return count
+}
+
+// AddURLs queues one or more URLs. Playlists are expanded.
+func (m *Manager) AddURLs(ctx context.Context, urls []string, opts Options) ([]*Job, error) {
+        if opts.OutputDir == "" {
+                opts.OutputDir = m.output
+        }
+        _ = os.MkdirAll(opts.OutputDir, 0o755)
+
+        var created []*Job
+        for _, rawURL := range urls {
+                u := cleaner.CleanURL(rawURL)
+                if u == "" {
+                        continue
+                }
+                // Dedup: skip if this URL was already successfully downloaded
+                if m.IsDuplicateURL(u) {
+                        continue
+                }
+                // Probe quickly to expand playlists; failures still queue raw URL.
+                pctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+                metas, err := ytdlp.Probe(pctx, m.ytdlp, u)
+                cancel()
+                if err != nil || len(metas) == 0 {
+                        j := m.newJob(u, "", "", "", 0, opts)
+                        created = append(created, j)
+                        continue
+                }
+                for _, meta := range metas {
+                        jurl := meta.URL
+                        if jurl == "" {
+                                jurl = u
+                        }
+                        if m.IsDuplicateURL(jurl) {
+                                continue
+                        }
+                        j := m.newJob(jurl, meta.Title, meta.Uploader, meta.Thumbnail, meta.Duration, opts)
+                        created = append(created, j)
+                }
+        }
+        return created, nil
+}
+
+// AddDirect creates one job per URL with provided title (no probing).
+func (m *Manager) AddDirect(items []DirectItem, opts Options) []*Job {
+        if opts.OutputDir == "" {
+                opts.OutputDir = m.output
+        }
+        _ = os.MkdirAll(opts.OutputDir, 0o755)
+        var created []*Job
+        for _, it := range items {
+                u := cleaner.CleanURL(it.URL)
+                if u == "" {
+                        continue
+                }
+                if m.IsDuplicateURL(u) {
+                        continue
+                }
+                j := m.newJob(u, it.Title, it.Uploader, it.Thumbnail, it.Duration, opts)
+                created = append(created, j)
+        }
+        return created
+}
+
+type DirectItem struct {
+        URL       string  `json:"url"`
+        Title     string  `json:"title"`
+        Uploader  string  `json:"uploader"`
+        Thumbnail string  `json:"thumbnail"`
+        Duration  float64 `json:"duration"`
+}
+
+func (m *Manager) newJob(u, title, uploader, thumb string, duration float64, opts Options) *Job {
+        j := &Job{
+                ID:        uuid.NewString(),
+                URL:       u,
+                Title:     title,
+                Uploader:  uploader,
+                Thumbnail: thumb,
+                Duration:  duration,
+                Status:    StatusQueued,
+                Stage:     "queued",
+                Options:   opts,
+                CreatedAt: time.Now(),
+                UpdatedAt: time.Now(),
+        }
+        m.mu.Lock()
+        m.jobs[j.ID] = j
+        m.order = append(m.order, j.ID)
+        closed := m.closed
+        m.mu.Unlock()
+        m.updateJob(j)
+        if !closed {
+                m.queue <- j.ID // safe: buffer is 1024, queue not full for normal usage
+        }
+        return j
+}
+
+func (m *Manager) Get(id string) (*Job, bool) {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        j, ok := m.jobs[id]
+        if !ok {
+                return nil, false
+        }
+        return jobCopy(j), true
+}
+
+func (m *Manager) Retry(id string) bool {
+        m.mu.Lock()
+        j, ok := m.jobs[id]
+        if !ok {
+                m.mu.Unlock()
+                return false
+        }
+        if j.Status != StatusFailed && j.Status != StatusCanceled {
+                m.mu.Unlock()
+                return false
+        }
+        j.Status = StatusQueued
+        j.Progress = 0
+        j.Error = ""
+        j.Stage = "queued"
+        j.UpdatedAt = time.Now()
+        closed := m.closed
+        m.mu.Unlock()
+        m.updateJob(j)
+        if !closed {
+                m.queue <- id
+        }
+        return true
+}
+
+// RetryAllFailed re-queues all failed and canceled jobs. Returns count of retried jobs.
+func (m *Manager) RetryAllFailed() int {
+        m.mu.Lock()
+        var ids []string
+        for _, id := range m.order {
+                j, ok := m.jobs[id]
+                if !ok {
+                        continue
+                }
+                if j.Status == StatusFailed || j.Status == StatusCanceled {
+                        j.Status = StatusQueued
+                        j.Progress = 0
+                        j.Error = ""
+                        j.Stage = "queued"
+                        j.UpdatedAt = time.Now()
+                        ids = append(ids, id)
+                }
+        }
+        m.mu.Unlock()
+        m.mu.RLock()
+        closed := m.closed
+        m.mu.RUnlock()
+        for _, id := range ids {
+                m.mu.RLock()
+                j, ok := m.jobs[id]
+                m.mu.RUnlock()
+                if ok {
+                        m.updateJob(j) // broadcast the real job with all its fields
+                }
+                if !closed {
+                        m.queue <- id
+                }
+        }
+        return len(ids)
+}
+
+func (m *Manager) Remove(id string) bool {
+        m.mu.Lock()
+        j, ok := m.jobs[id]
+        if !ok {
+                m.mu.Unlock()
+                return false
+        }
+        if j.cancel != nil {
+                j.cancel()
+        }
+        go m.cleanupPartialFiles(j)
+        delete(m.jobs, id)
+        for i, x := range m.order {
+                if x == id {
+                        m.order = append(m.order[:i], m.order[i+1:]...)
+                        break
+                }
+        }
+        m.mu.Unlock()
+        if m.deleteJob != nil {
+                m.deleteJob(id)
+        }
+        m.broadcast(Event{Type: "snapshot", Jobs: m.List()})
+        return true
+}
+
+func (m *Manager) Clear(kind string) int {
+        m.mu.Lock()
+        var keep []string
+        var removed int
+        var deletedIDs []string
+        for _, id := range m.order {
+                j := m.jobs[id]
+                if (kind == "completed" && j.Status == StatusDone) ||
+                        (kind == "failed" && (j.Status == StatusFailed || j.Status == StatusCanceled)) {
+                        delete(m.jobs, id)
+                        deletedIDs = append(deletedIDs, id)
+                        removed++
+                        go m.cleanupPartialFiles(j)
+                        continue
+                }
+                keep = append(keep, id)
+        }
+        m.order = keep
+        m.mu.Unlock()
+        if m.deleteJob != nil {
+                for _, id := range deletedIDs {
+                        m.deleteJob(id)
+                }
+        }
+        m.broadcast(Event{Type: "snapshot", Jobs: m.List()})
+        return removed
+}
+// cleanupPartialFiles deletes .part and .ytdl files associated with a canceled or removed job.
+func (m *Manager) cleanupPartialFiles(j *Job) {
+        if j == nil {
+                return
+        }
+        m.mu.RLock()
+        outDir := j.Options.OutputDir
+        if outDir == "" {
+                outDir = m.output
+        }
+        outputFile := j.OutputFile
+        m.mu.RUnlock()
+
+        if outDir == "" || outputFile == "" {
+                return
+        }
+
+        _ = os.Remove(outputFile + ".part")
+        _ = os.Remove(outputFile + ".ytdl")
+}
+
+
+// --- Worker / execution ---
+
+// worker processes jobs from the queue.
+func (m *Manager) worker() {
+        m.mu.Lock()
+        m.activeWorkers++
+        m.mu.Unlock()
+
+        defer func() {
+                m.mu.Lock()
+                m.activeWorkers--
+                m.mu.Unlock()
+        }()
+
+        for id := range m.queue {
+                m.runJob(id)
+
+                m.mu.Lock()
+                if m.activeWorkers > m.workers {
+                        m.mu.Unlock()
+                        return
+                }
+                m.mu.Unlock()
+        }
+}
+
+func (m *Manager) runJob(id string) {
+        m.mu.Lock()
+        j, ok := m.jobs[id]
+        if !ok {
+                m.mu.Unlock()
+                return
+        }
+        ctx, cancel := context.WithCancel(context.Background())
+        j.cancel = cancel
+        j.Status = StatusDownloading
+        j.Stage = "starting"
+        j.UpdatedAt = time.Now()
+        m.mu.Unlock()
+        m.updateJob(j)
+
+        defer func() {
+                m.mu.Lock()
+                j.cancel = nil
+                j.UpdatedAt = time.Now()
+                m.mu.Unlock()
+                m.updateJob(j)
+        }()
+
+        if err := m.execute(ctx, j); err != nil {
+                m.mu.Lock()
+                if j.Status != StatusCanceled {
+                        j.Status = StatusFailed
+                        j.Error = err.Error()
+                        j.Stage = "failed"
+                        // Dead-link archiver: log unavailable/private videos
+                        errLow := strings.ToLower(err.Error())
+                        if strings.Contains(errLow, "video unavailable") ||
+                                strings.Contains(errLow, "private video") ||
+                                strings.Contains(errLow, "has been removed") {
+                                m.logDeadLink(j)
+                        }
+                }
+                m.mu.Unlock()
+                m.appendLog(j.ID, "ERROR: "+err.Error())
+                return
+        }
+        m.mu.Lock()
+        j.Status = StatusDone
+        j.Progress = 100
+        j.Stage = "done"
+        m.mu.Unlock()
+        m.appendLog(j.ID, "DONE: "+j.Title)
+}
+
+var progressRe = regexp.MustCompile(`\[download\]\s+([\d.]+)%(?:\s+of\s+[~\d.A-Za-z]+)?(?:\s+at\s+([\d.A-Za-z/]+))?(?:\s+ETA\s+(\S+))?`)
+var destRe = regexp.MustCompile(`\[download\] Destination:\s+(.+)$`)
+var mergeRe = regexp.MustCompile(`\[(?:Merger|ExtractAudio|EmbedThumbnail|Metadata|ffmpeg)\]\s+(.+)$`)
+
+// logDeadLink appends a dead/unavailable link to dead_links.csv in the output directory.
+// Uses atomic write (temp file + rename) to prevent corruption on crash.
+func (m *Manager) logDeadLink(j *Job) {
+        m.mu.RLock()
+        outDir := m.output
+        m.mu.RUnlock()
+        csv := filepath.Join(outDir, "dead_links.csv")
+        m.ioMu.Lock()
+        defer m.ioMu.Unlock()
+
+        // Read existing content
+        existing, _ := os.ReadFile(csv)
+        needsHeader := len(existing) == 0
+
+        // Build new content
+        title := strings.ReplaceAll(j.Title, ",", " ")
+        errMsg := strings.ReplaceAll(j.Error, ",", " ")
+        line := fmt.Sprintf("%s,%s,%s,%s\n", time.Now().UTC().Format(time.RFC3339), j.URL, title, errMsg)
+
+        var buf []byte
+        if needsHeader {
+                buf = append([]byte("timestamp,url,title,error\n"), existing...)
+        } else {
+                buf = existing
+        }
+        buf = append(buf, []byte(line)...)
+
+        // Write to temp file then rename atomically
+        tmp := csv + ".tmp"
+        if err := os.WriteFile(tmp, buf, 0o644); err != nil {
+                return
+        }
+        _ = os.Rename(tmp, csv)
+}
+
+func (m *Manager) execute(ctx context.Context, j *Job) error {
+        opts := j.Options
+        if opts.Format == "" {
+                opts.Format = "mp3"
+        }
+        if opts.OutputDir == "" {
+                opts.OutputDir = m.output
+        }
+
+        // Intelligent Folder Routing
+        lowerFormat := strings.ToLower(opts.Format)
+        lowerURL := strings.ToLower(j.URL)
+
+        isAudio := false
+        isVideo := false
+
+        audioExts := []string{".mp3", ".m4a", ".flac", ".wav", ".opus", ".aac", ".ogg"}
+        videoExts := []string{".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv"}
+
+        switch lowerFormat {
+        case "mp3", "m4a", "flac", "wav", "opus":
+                isAudio = true
+        case "mp4", "mkv", "webm", "best":
+                isVideo = true
+        }
+
+        // Fallback to URL extension check
+        if !isAudio && !isVideo {
+                for _, ext := range audioExts {
+                        if strings.HasSuffix(lowerURL, ext) {
+                                isAudio = true
+                                break
+                        }
+                }
+                if !isAudio {
+                        for _, ext := range videoExts {
+                                if strings.HasSuffix(lowerURL, ext) {
+                                        isVideo = true
+                                        break
+                                }
+                        }
+                }
+        }
+
+        if isAudio {
+                opts.OutputDir = filepath.Join(opts.OutputDir, "Entropy Music")
+        } else if isVideo {
+                opts.OutputDir = filepath.Join(opts.OutputDir, "Entropy Videos")
+        }
+
+        _ = os.MkdirAll(opts.OutputDir, 0o755)
+
+        // Disk space guard: refuse to start if disk is too full.
+        if err := diskguard.Check(opts.OutputDir, 0); err != nil {
+                return fmt.Errorf("disk guard: %w", err)
+        }
+
+        args := []string{
+                "--newline",
+                "--no-warnings",
+                "--progress",
+                "--no-mtime",
+                "-o", filepath.Join(opts.OutputDir, "%(title)s.%(ext)s"),
+                "--print", "after_move:FINAL_FILE=%(filepath)s",
+                // Resilience against transient YouTube 403s + connection resets.
+                "--retries", "10",
+                "--fragment-retries", "10",
+                "--retry-sleep", "exp=1:8",
+                "--socket-timeout", "30",
+                // Try multiple YouTube player clients; if one is rate-limited the
+                // next is tried automatically. This is the single biggest 403-killer.
+                "--extractor-args", "youtube:player_client=default,tv,web_safari,ios",
+        }
+
+        // Pull cookies from the user's browser session if requested. This is the
+        // most reliable way around YouTube's anonymous-extraction limits.
+        // FIX #3: validate against known browser list to prevent injection.
+        if opts.CookiesBrowser != "" && strings.ToLower(opts.CookiesBrowser) != "none" {
+                if !validCookieBrowsers[strings.ToLower(opts.CookiesBrowser)] {
+                        return fmt.Errorf("unsupported cookie browser: %q", opts.CookiesBrowser)
+                }
+                args = append(args, "--cookies-from-browser", strings.ToLower(opts.CookiesBrowser))
+        }
+
+        // Engine selection — aria2c for HTTP segments
+        if strings.EqualFold(opts.Engine, "aria2c") {
+                args = append(args,
+                        "--downloader", "aria2c",
+                        "--downloader-args", "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=1",
+                )
+        }
+
+        // Format selection
+        heightFilter := ""
+        switch strings.ToLower(opts.Resolution) {
+        case "4k":
+                heightFilter = "[height<=2160]"
+        case "1440p":
+                heightFilter = "[height<=1440]"
+        case "1080p":
+                heightFilter = "[height<=1080]"
+        case "720p":
+                heightFilter = "[height<=720]"
+        case "480p":
+                heightFilter = "[height<=480]"
+        }
+
+        audioFormats := map[string]bool{
+                "mp3": true, "m4a": true, "flac": true, "opus": true, "wav": true, "aac": true, "vorbis": true,
+        }
+        if audioFormats[strings.ToLower(opts.Format)] {
+                args = append(args, "-x", "--audio-format", strings.ToLower(opts.Format))
+                if opts.Bitrate != "" && opts.Bitrate != "0" {
+                        args = append(args, "--audio-quality", opts.Bitrate+"K")
+                }
+        } else if strings.EqualFold(opts.Format, "mp4") {
+                formatStr := fmt.Sprintf("bv*%s[ext=mp4]+ba[ext=m4a]/b%s[ext=mp4]/b", heightFilter, heightFilter)
+                args = append(args, "-f", formatStr, "--merge-output-format", "mp4")
+        } else if strings.EqualFold(opts.Format, "webm") {
+                formatStr := fmt.Sprintf("bv*%s[ext=webm]+ba[ext=webm]/b%s[ext=webm]/b", heightFilter, heightFilter)
+                args = append(args, "-f", formatStr, "--merge-output-format", "webm")
+        } else if strings.EqualFold(opts.Format, "mkv") {
+                formatStr := fmt.Sprintf("bv*%s+ba/b", heightFilter)
+                args = append(args, "-f", formatStr, "--merge-output-format", "mkv")
+        } else if strings.EqualFold(opts.Format, "best") {
+                formatStr := fmt.Sprintf("bv*%s+ba/b", heightFilter)
+                args = append(args, "-f", formatStr)
+        }
+
+        if opts.EmbedMeta {
+                args = append(args, "--add-metadata")
+        }
+        if opts.EmbedThumb {
+                args = append(args, "--embed-thumbnail", "--convert-thumbnails", "jpg")
+        }
+        if opts.ScrapeDelay {
+                // Randomized sleep to avoid YouTube 429 IP bans when bulk downloading
+                args = append(args, "--sleep-requests", "2", "--min-sleep-interval", "1", "--max-sleep-interval", "5")
+        }
+
+        // Bandwidth limiter — uses global default (5M) to avoid YouTube IP bans during bulk downloads.
+        // Per-job BandwidthLimit in Options overrides the global default.
+        bwLimit := opts.BandwidthLimit
+        if bwLimit == "" {
+                bwLimit = m.Bandwidth()
+        }
+        if bwLimit != "" && bwLimit != "0" {
+                args = append(args, "--limit-rate", bwLimit)
+        }
+
+        args = append(args, j.URL)
+
+        cmd := exec.CommandContext(ctx, m.ytdlp, args...)
+        cmd.Cancel = func() error {
+                return cmd.Process.Signal(os.Interrupt)
+        }
+        cmd.WaitDelay = 3 * time.Second
+        cmdutil.PrepareCmd(cmd)
+        cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
+
+        stdout, err := cmd.StdoutPipe()
+        if err != nil {
+                return err
+        }
+        stderr, err := cmd.StderrPipe()
+        if err != nil {
+                return err
+        }
+        if err := cmd.Start(); err != nil {
+                return err
+        }
+
+        m.appendLog(j.ID, "$ "+m.ytdlp+" "+strings.Join(args, " "))
+
+        // Idle watchdog: track last activity time and cancel if silent too long.
+        lastActivity := time.Now()
+        lastActivityMu := sync.Mutex{}
+        watchdogDone := make(chan struct{})
+        // jobDone signals the watchdog that I/O has drained so it can exit immediately.
+        jobDone := make(chan struct{})
+        go func() {
+                defer close(watchdogDone)
+                ticker := time.NewTicker(30 * time.Second)
+                defer ticker.Stop()
+                for {
+                        select {
+                        case <-ctx.Done():
+                                return
+                        case <-jobDone:
+                                // I/O readers finished — job completed normally, no need to watchdog further.
+                                return
+                        case <-ticker.C:
+                                lastActivityMu.Lock()
+                                idle := time.Since(lastActivity)
+                                lastActivityMu.Unlock()
+                                if idle > idleJobTimeout {
+                                        m.appendLog(j.ID, fmt.Sprintf("[watchdog] job idle for %v — canceling as hung", idle.Round(time.Second)))
+                                        if j.cancel != nil {
+                                                j.cancel()
+                                        }
+                                        return
+                                }
+                        }
+                }
+        }()
+
+        done := make(chan struct{}, 2)
+        go func() {
+                ytdlp.ReadLines(stdout, func(line string) {
+                        lastActivityMu.Lock()
+                        lastActivity = time.Now()
+                        lastActivityMu.Unlock()
+                        m.handleLine(j, line)
+                })
+                done <- struct{}{}
+        }()
+        go func() {
+                ytdlp.ReadLines(stderr, func(line string) {
+                        lastActivityMu.Lock()
+                        lastActivity = time.Now()
+                        lastActivityMu.Unlock()
+                        m.appendLog(j.ID, line)
+                })
+                done <- struct{}{}
+        }()
+        <-done
+        <-done
+        // Signal the watchdog that I/O is complete so it exits without waiting for its next tick.
+        close(jobDone)
+        <-watchdogDone
+
+        if err := cmd.Wait(); err != nil {
+                if ctx.Err() != nil {
+                        m.mu.Lock()
+                        j.Status = StatusCanceled
+                        j.Stage = "canceled"
+                        m.mu.Unlock()
+                        return fmt.Errorf("canceled")
+                }
+                return fmt.Errorf("yt-dlp exited: %w", err)
+        }
+        return nil
+}
+
+func (m *Manager) handleLine(j *Job, line string) {
+        m.appendLog(j.ID, line)
+
+        if mm := progressRe.FindStringSubmatch(line); mm != nil {
+                if p, err := strconv.ParseFloat(mm[1], 64); err == nil {
+                        m.mu.Lock()
+                        j.Status = StatusDownloading
+                        j.Stage = "downloading"
+                        j.Progress = p
+                        if len(mm) > 2 {
+                                j.Speed = mm[2]
+                        }
+                        if len(mm) > 3 {
+                                j.ETA = mm[3]
+                        }
+                        j.UpdatedAt = time.Now()
+                        m.mu.Unlock()
+                        m.updateJob(j)
+                }
+                return
+        }
+
+        if mm := destRe.FindStringSubmatch(line); mm != nil {
+                m.mu.Lock()
+                j.OutputFile = strings.TrimSpace(mm[1])
+                m.mu.Unlock()
+        }
+
+        if strings.HasPrefix(line, "FINAL_FILE=") {
+                fp := strings.TrimPrefix(line, "FINAL_FILE=")
+                m.mu.Lock()
+                j.OutputFile = strings.TrimSpace(fp)
+                m.mu.Unlock()
+                return
+        }
+
+        if mm := mergeRe.FindStringSubmatch(line); mm != nil {
+                m.mu.Lock()
+                j.Status = StatusProcessing
+                j.Stage = "post-processing"
+                j.UpdatedAt = time.Now()
+                m.mu.Unlock()
+                m.updateJob(j)
+                return
+        }
+
+        if strings.HasPrefix(line, "[ExtractAudio]") || strings.HasPrefix(line, "[Metadata]") ||
+                strings.Contains(line, "Deleting original file") {
+                m.mu.Lock()
+                j.Status = StatusProcessing
+                j.Stage = "post-processing"
+                m.mu.Unlock()
+                m.updateJob(j)
+        }
+}
+
+func jobCopy(j *Job) *Job {
+        cp := *j
+        cp.cancel = nil
+        return &cp
+}
+
+// Stats represents aggregate job statistics for the dashboard.
+type Stats struct {
+        Total       int          `json:"total"`
+        Queued      int          `json:"queued"`
+        Downloading int          `json:"downloading"`
+        Processing  int          `json:"processing"`
+        Done        int          `json:"done"`
+        Failed      int          `json:"failed"`
+        Canceled    int          `json:"canceled"`
+        FreeDiskGB  uint64       `json:"free_disk_gb"`
+        Workers     int          `json:"workers"`
+        TopErrors   []ErrorCount `json:"top_errors,omitempty"`
+}
+
+// ErrorCount groups errors by message for the stats endpoint.
+type ErrorCount struct {
+        Error string `json:"error"`
+        Count int    `json:"count"`
+}
+
+// Stats returns aggregate statistics about all jobs.
+func (m *Manager) Stats() Stats {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        s := Stats{
+                Total:   len(m.order),
+                Workers: m.workers,
+        }
+        errMap := make(map[string]int)
+        for _, id := range m.order {
+                j, ok := m.jobs[id]
+                if !ok {
+                        continue
+                }
+                switch j.Status {
+                case StatusQueued:
+                        s.Queued++
+                case StatusDownloading:
+                        s.Downloading++
+                case StatusProcessing:
+                        s.Processing++
+                case StatusDone:
+                        s.Done++
+                case StatusFailed:
+                        s.Failed++
+                        if j.Error != "" {
+                                errMap[j.Error]++
+                        }
+                case StatusCanceled:
+                        s.Canceled++
+                }
+        }
+        // Top 5 errors
+        for err, count := range errMap {
+                s.TopErrors = append(s.TopErrors, ErrorCount{Error: err, Count: count})
+        }
+        // Sort by count descending
+        sort.Slice(s.TopErrors, func(i, j int) bool {
+                return s.TopErrors[i].Count > s.TopErrors[j].Count
+        })
+        if len(s.TopErrors) > 5 {
+                s.TopErrors = s.TopErrors[:5]
+        }
+        return s
+}

@@ -1,0 +1,471 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Entropy — Material You 3 Design Token System
+   Dynamic Color: colors injected at runtime by ThemeSync via HCT algorithm.
+   Fallback: Violet expressive seed (#7C4DFF, M3 default).
+   Light/dark switching handled by ThemeSync (listens to prefers-color-scheme).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  color-scheme: dark;
+
+  /* ─────────────────────────────────────────────
+     Color — PRIMARY (Violet #7C4DFF fallback — overwritten by ThemeSync)
+     ───────────────────────────────────────────── */
+  --md-sys-color-primary: #D0BCFF;
+  --md-sys-color-on-primary: #381E72;
+  --md-sys-color-primary-container: #4F378B;
+  --md-sys-color-on-primary-container: #EADDFF;
+
+  /* ─────────────────────────────────────────────
+     Color — Secondary
+     ───────────────────────────────────────────── */
+  --md-sys-color-secondary: #CCC2DC;
+  --md-sys-color-on-secondary: #332D41;
+  --md-sys-color-secondary-container: #4A4458;
+  --md-sys-color-on-secondary-container: #E8DEF8;
+
+  /* ─────────────────────────────────────────────
+     Color — Tertiary
+     ───────────────────────────────────────────── */
+  --md-sys-color-tertiary: #EFB8C8;
+  --md-sys-color-on-tertiary: #492532;
+  --md-sys-color-tertiary-container: #633B48;
+  --md-sys-color-on-tertiary-container: #FFD8E4;
+
+  /* ─────────────────────────────────────────────
+     Color — Error
+     ───────────────────────────────────────────── */
+  --md-sys-color-error: #F2B8B5;
+  --md-sys-color-on-error: #601410;
+  --md-sys-color-error-container: #8C1D18;
+  --md-sys-color-on-error-container: #F9DEDC;
+
+  /* ─────────────────────────────────────────────
+     Color — Semantic success/warning (fixed, not derived)
+     ───────────────────────────────────────────── */
+  --md-sys-color-success: #8BD48C;
+  --md-sys-color-on-success: #003910;
+  --md-sys-color-success-container: #005321;
+  --md-sys-color-on-success-container: #A8F1A7;
+  --md-sys-color-warning: #FFD080;
+  --md-sys-color-on-warning: #3E2E00;
+  --md-sys-color-warning-container: #5C4500;
+  --md-sys-color-on-warning-container: #FFE08B;
+
+  /* ─────────────────────────────────────────────
+     Color — Surfaces (dark violet-tinted fallback)
+     ───────────────────────────────────────────── */
+  --md-sys-color-background: #141218;
+  --md-sys-color-on-background: #E6E0E9;
+  --md-sys-color-surface: #141218;
+  --md-sys-color-on-surface: #E6E0E9;
+  --md-sys-color-surface-dim: #141218;
+  --md-sys-color-surface-bright: #3B383E;
+  --md-sys-color-surface-container-lowest: #0F0D13;
+  --md-sys-color-surface-container-low: #1D1A20;
+  --md-sys-color-surface-container: #211F26;
+  --md-sys-color-surface-container-high: #2B2930;
+  --md-sys-color-surface-container-highest: #36343B;
+  --md-sys-color-surface-variant: #49454F;
+  --md-sys-color-on-surface-variant: #CAC4D0;
+
+  /* ─────────────────────────────────────────────
+     Color — Outline
+     ───────────────────────────────────────────── */
+  --md-sys-color-outline: #938F99;
+  --md-sys-color-outline-variant: #49454F;
+
+  /* ─────────────────────────────────────────────
+     Color — Inverse
+     ───────────────────────────────────────────── */
+  --md-sys-color-inverse-surface: #E6E0E9;
+  --md-sys-color-inverse-on-surface: #322F35;
+
+  /* ─────────────────────────────────────────────
+     Color — Scrim / Shadow
+     ───────────────────────────────────────────── */
+  --md-sys-color-scrim: #000000;
+  --md-sys-color-shadow: #000000;
+
+  /* ─────────────────────────────────────────────
+     Color — Status (semantic aliases)
+     ───────────────────────────────────────────── */
+  --md-ref-color-status-queued: var(--md-sys-color-outline);
+  --md-ref-color-status-searching: var(--md-sys-color-tertiary);
+  --md-ref-color-status-downloading: var(--md-sys-color-primary);
+  --md-ref-color-status-processing: var(--md-sys-color-warning);
+  --md-ref-color-status-done: var(--md-sys-color-success);
+  --md-ref-color-status-failed: var(--md-sys-color-error);
+  --md-ref-color-status-canceled: var(--md-sys-color-error);
+
+  /* ─────────────────────────────────────────────
+     Color — Legacy compat (shorthand aliases)
+     ───────────────────────────────────────────── */
+  --md-primary: var(--md-sys-color-primary);
+  --md-on-primary: var(--md-sys-color-on-primary);
+  --md-primary-container: var(--md-sys-color-primary-container);
+  --md-on-primary-container: var(--md-sys-color-on-primary-container);
+  --md-secondary: var(--md-sys-color-secondary);
+  --md-on-secondary: var(--md-sys-color-on-secondary);
+  --md-secondary-container: var(--md-sys-color-secondary-container);
+  --md-on-secondary-container: var(--md-sys-color-on-secondary-container);
+  --md-tertiary: var(--md-sys-color-tertiary);
+  --md-on-tertiary: var(--md-sys-color-on-tertiary);
+  --md-tertiary-container: var(--md-sys-color-tertiary-container);
+  --md-on-tertiary-container: var(--md-sys-color-on-tertiary-container);
+  --md-error: var(--md-sys-color-error);
+  --md-on-error: var(--md-sys-color-on-error);
+  --md-error-container: var(--md-sys-color-error-container);
+  --md-on-error-container: var(--md-sys-color-on-error-container);
+  --md-success: var(--md-sys-color-success);
+  --md-on-success: var(--md-sys-color-on-success);
+  --md-success-container: var(--md-sys-color-success-container);
+  --md-on-success-container: var(--md-sys-color-on-success-container);
+  --md-warning: var(--md-sys-color-warning);
+  --md-on-warning: var(--md-sys-color-on-warning);
+  --md-warning-container: var(--md-sys-color-warning-container);
+  --md-on-warning-container: var(--md-sys-color-on-warning-container);
+  --md-background: var(--md-sys-color-background);
+  --md-on-background: var(--md-sys-color-on-background);
+  --md-surface: var(--md-sys-color-surface);
+  --md-on-surface: var(--md-sys-color-on-surface);
+  --md-surface-dim: var(--md-sys-color-surface-dim);
+  --md-surface-bright: var(--md-sys-color-surface-bright);
+  --md-surface-container-lowest: var(--md-sys-color-surface-container-lowest);
+  --md-surface-container-low: var(--md-sys-color-surface-container-low);
+  --md-surface-container: var(--md-sys-color-surface-container);
+  --md-surface-container-high: var(--md-sys-color-surface-container-high);
+  --md-surface-container-highest: var(--md-sys-color-surface-container-highest);
+  --md-surface-variant: var(--md-sys-color-surface-variant);
+  --md-on-surface-variant: var(--md-sys-color-on-surface-variant);
+  --md-outline: var(--md-sys-color-outline);
+  --md-outline-variant: var(--md-sys-color-outline-variant);
+  --md-inverse-surface: var(--md-sys-color-inverse-surface);
+  --md-inverse-on-surface: var(--md-sys-color-inverse-on-surface);
+  --md-scrim: var(--md-sys-color-scrim);
+  --md-shadow: var(--md-sys-color-shadow);
+
+  /* Status aliases */
+  --st-queued: var(--md-ref-color-status-queued);
+  --st-searching: var(--md-ref-color-status-searching);
+  --st-downloading: var(--md-ref-color-status-downloading);
+  --st-processing: var(--md-ref-color-status-processing);
+  --st-done: var(--md-ref-color-status-done);
+  --st-fail: var(--md-ref-color-status-failed);
+  --st-failure: var(--md-ref-color-status-failed);
+
+  /* Semantic shorthand */
+  --bg: var(--md-sys-color-background);
+  --bg-2: var(--md-sys-color-surface-container-low);
+  --bg-3: var(--md-sys-color-surface-container-high);
+  --fg: var(--md-sys-color-on-surface);
+  --fg-dim: var(--md-sys-color-on-surface-variant);
+  --fg-muted: var(--md-sys-color-outline);
+  --border: var(--md-sys-color-outline-variant);
+  --border-mid: var(--md-sys-color-outline-variant);
+  --border-soft: var(--md-sys-color-outline-variant);
+  --border-muted: var(--md-sys-color-outline-variant);
+  --st-active: var(--md-sys-color-primary);
+  --st-process: var(--md-sys-color-warning);
+  --st-loading: var(--md-sys-color-warning);
+
+  /* ─────────────────────────────────────────────
+     Typography — Font families
+     ───────────────────────────────────────────── */
+  --md-sys-typescale-font-family-display: "Inter", system-ui, sans-serif;
+  --md-sys-typescale-font-family-body: "Inter", system-ui, sans-serif;
+  --md-sys-typescale-font-family-label: "Inter", system-ui, sans-serif;
+  --md-sys-typescale-font-family-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  --md-sys-typescale-font-family-symbols: "Material Symbols Outlined", "Material Symbols", sans-serif;
+
+  --font-mono: var(--md-sys-typescale-font-family-mono);
+  --font-ui: var(--md-sys-typescale-font-family-body);
+  --font-symbols: var(--md-sys-typescale-font-family-symbols);
+
+  /* ─────────────────────────────────────────────
+     Typography — Scale (M3 Type Scale)
+     ───────────────────────────────────────────── */
+  --md-sys-typescale-display-large: 700 3.5rem/4rem var(--md-sys-typescale-font-family-display);
+  --md-sys-typescale-display-medium: 500 2.8rem/3.25rem var(--md-sys-typescale-font-family-display);
+  --md-sys-typescale-display-small: 400 2.25rem/2.75rem var(--md-sys-typescale-font-family-display);
+  --md-sys-typescale-headline-large: 400 2rem/2.5rem var(--md-sys-typescale-font-family-body);
+  --md-sys-typescale-headline-medium: 400 1.75rem/2.25rem var(--md-sys-typescale-font-family-body);
+  --md-sys-typescale-headline-small: 400 1.5rem/2rem var(--md-sys-typescale-font-family-body);
+  --md-sys-typescale-title-large: 400 1.375rem/1.75rem var(--md-sys-typescale-font-family-body);
+  --md-sys-typescale-title-medium: 500 1rem/1.5rem var(--md-sys-typescale-font-family-body);
+  --md-sys-typescale-title-small: 500 0.875rem/1.25rem var(--md-sys-typescale-font-family-body);
+  --md-sys-typescale-body-large: 400 1rem/1.5rem var(--md-sys-typescale-font-family-body);
+  --md-sys-typescale-body-medium: 400 0.875rem/1.25rem var(--md-sys-typescale-font-family-body);
+  --md-sys-typescale-body-small: 400 0.75rem/1rem var(--md-sys-typescale-font-family-body);
+  --md-sys-typescale-label-large: 500 0.875rem/1.25rem var(--md-sys-typescale-font-family-label);
+  --md-sys-typescale-label-medium: 500 0.75rem/1rem var(--md-sys-typescale-font-family-label);
+  --md-sys-typescale-label-small: 500 0.6875rem/1rem var(--md-sys-typescale-font-family-label);
+
+  --md-type-display-large: var(--md-sys-typescale-display-large);
+  --md-type-display-medium: var(--md-sys-typescale-display-medium);
+  --md-type-display-small: var(--md-sys-typescale-display-small);
+  --md-type-headline-large: var(--md-sys-typescale-headline-large);
+  --md-type-headline-medium: var(--md-sys-typescale-headline-medium);
+  --md-type-headline-small: var(--md-sys-typescale-headline-small);
+  --md-type-title-large: var(--md-sys-typescale-title-large);
+  --md-type-title-medium: var(--md-sys-typescale-title-medium);
+  --md-type-title-small: var(--md-sys-typescale-title-small);
+  --md-type-body-large: var(--md-sys-typescale-body-large);
+  --md-type-body-medium: var(--md-sys-typescale-body-medium);
+  --md-type-body-small: var(--md-sys-typescale-body-small);
+  --md-type-label-large: var(--md-sys-typescale-label-large);
+  --md-type-label-medium: var(--md-sys-typescale-label-medium);
+  --md-type-label-small: var(--md-sys-typescale-label-small);
+
+  /* ─────────────────────────────────────────────
+     Typography — Legacy text size tokens
+     ───────────────────────────────────────────── */
+  --md-sys-typescale-size-2xs: 0.6875rem;
+  --md-sys-typescale-size-xs: 0.75rem;
+  --md-sys-typescale-size-sm: 0.8125rem;
+  --md-sys-typescale-size-md: 0.875rem;
+  --md-sys-typescale-size-base: 1rem;
+  --md-sys-typescale-size-lg: 1.125rem;
+  --md-sys-typescale-size-xl: 1.25rem;
+  --md-sys-typescale-size-2xl: 1.5rem;
+  --md-sys-typescale-size-3xl: 2rem;
+  --md-sys-typescale-size-4xl: 2.25rem;
+
+  --text-2xs: var(--md-sys-typescale-size-2xs);
+  --text-xs: var(--md-sys-typescale-size-xs);
+  --text-sm: var(--md-sys-typescale-size-sm);
+  --text-md: var(--md-sys-typescale-size-md);
+  --text-base: var(--md-sys-typescale-size-base);
+  --text-lg: var(--md-sys-typescale-size-lg);
+  --text-xl: var(--md-sys-typescale-size-xl);
+  --text-2xl: var(--md-sys-typescale-size-2xl);
+  --text-3xl: var(--md-sys-typescale-size-3xl);
+
+  /* ─────────────────────────────────────────────
+     Typography — Letter spacing
+     ───────────────────────────────────────────── */
+  --md-sys-typescale-tracking-tight: 0.01em;
+  --md-sys-typescale-tracking-normal: 0.02em;
+  --md-sys-typescale-tracking-wide: 0.2em;
+  --md-sys-typescale-tracking-wider: 0.25em;
+  --md-sys-typescale-tracking-widest: 0.35em;
+
+  --track-tight: var(--md-sys-typescale-tracking-tight);
+  --track-normal: var(--md-sys-typescale-tracking-normal);
+  --track-wide: var(--md-sys-typescale-tracking-wide);
+  --track-wider: var(--md-sys-typescale-tracking-wider);
+  --track-widest: var(--md-sys-typescale-tracking-widest);
+
+  /* ─────────────────────────────────────────────
+     Shape — Corner Radius
+     ───────────────────────────────────────────── */
+  --md-sys-shape-none: 0px;
+  --md-sys-shape-extra-small: 4px;
+  --md-sys-shape-small: 8px;
+  --md-sys-shape-medium: 12px;
+  --md-sys-shape-large: 16px;
+  --md-sys-shape-extra-large: 28px;
+  --md-sys-shape-full: 9999px;
+
+  --md-shape-none: var(--md-sys-shape-none);
+  --md-shape-xs: var(--md-sys-shape-extra-small);
+  --md-shape-sm: var(--md-sys-shape-small);
+  --md-shape-md: var(--md-sys-shape-medium);
+  --md-shape-lg: var(--md-sys-shape-large);
+  --md-shape-xl: var(--md-sys-shape-extra-large);
+  --md-shape-full: var(--md-sys-shape-full);
+
+  --radius-sm: var(--md-sys-shape-extra-small);
+  --radius-md: var(--md-sys-shape-small);
+
+  /* ─────────────────────────────────────────────
+     Elevation — Tonal surface levels
+     ───────────────────────────────────────────── */
+  --md-sys-elevation-0: var(--md-sys-color-surface);
+  --md-sys-elevation-1: var(--md-sys-color-surface-container-lowest);
+  --md-sys-elevation-2: var(--md-sys-color-surface-container-low);
+  --md-sys-elevation-3: var(--md-sys-color-surface-container);
+  --md-sys-elevation-4: var(--md-sys-color-surface-container-high);
+  --md-sys-elevation-5: var(--md-sys-color-surface-container-highest);
+
+  --md-elevation-0: var(--md-sys-elevation-0);
+  --md-elevation-1: var(--md-sys-elevation-1);
+  --md-elevation-2: var(--md-sys-elevation-2);
+  --md-elevation-3: var(--md-sys-elevation-3);
+  --md-elevation-4: var(--md-sys-elevation-4);
+  --md-elevation-5: var(--md-sys-elevation-5);
+
+  /* ─────────────────────────────────────────────
+     Elevation — Shadows
+     ───────────────────────────────────────────── */
+  --md-sys-elevation-shadow-1: 0 1px 2px rgba(0,0,0,0.3), 0 1px 3px 1px rgba(0,0,0,0.15);
+  --md-sys-elevation-shadow-2: 0 1px 2px rgba(0,0,0,0.3), 0 2px 6px 2px rgba(0,0,0,0.15);
+  --md-sys-elevation-shadow-3: 0 4px 8px 3px rgba(0,0,0,0.15), 0 1px 3px rgba(0,0,0,0.3);
+  --md-sys-elevation-shadow-4: 0 6px 10px 4px rgba(0,0,0,0.15), 0 2px 3px rgba(0,0,0,0.3);
+  --md-sys-elevation-shadow-5: 0 8px 12px 6px rgba(0,0,0,0.15), 0 4px 4px rgba(0,0,0,0.3);
+
+  --md-shadow-1: var(--md-sys-elevation-shadow-1);
+  --md-shadow-2: var(--md-sys-elevation-shadow-2);
+  --md-shadow-3: var(--md-sys-elevation-shadow-3);
+  --md-shadow-4: var(--md-sys-elevation-shadow-4);
+  --md-shadow-5: var(--md-sys-elevation-shadow-5);
+
+  --shadow-hdr: var(--md-sys-elevation-shadow-1);
+
+  /* ─────────────────────────────────────────────
+     Motion — Duration
+     ───────────────────────────────────────────── */
+  --md-sys-motion-duration-short1: 50ms;
+  --md-sys-motion-duration-short2: 100ms;
+  --md-sys-motion-duration-short3: 200ms;
+  --md-sys-motion-duration-short4: 300ms;
+  --md-sys-motion-duration-medium1: 400ms;
+  --md-sys-motion-duration-medium2: 500ms;
+  --md-sys-motion-duration-long1: 600ms;
+  --md-sys-motion-duration-long2: 700ms;
+
+  --md-duration-short: var(--md-sys-motion-duration-short3);
+  --md-duration-medium: var(--md-sys-motion-duration-short4);
+  --md-duration-long: var(--md-sys-motion-duration-medium2);
+  --md-duration-extra-long: var(--md-sys-motion-duration-long1);
+
+  /* ─────────────────────────────────────────────
+     Motion — Easing
+     ───────────────────────────────────────────── */
+  --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --md-sys-motion-easing-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+  --md-sys-motion-easing-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+  --md-sys-motion-easing-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --md-sys-motion-easing-decelerated: cubic-bezier(0, 0, 0, 1);
+  --md-sys-motion-easing-linear: cubic-bezier(0, 0, 1, 1);
+
+  --md-easing-standard: var(--md-sys-motion-easing-standard);
+  --md-easing-emphasized: var(--md-sys-motion-easing-emphasized);
+  --md-easing-emphasized-decelerate: var(--md-sys-motion-easing-emphasized-decelerate);
+  --md-easing-emphasized-accelerate: var(--md-sys-motion-easing-emphasized-accelerate);
+  --md-easing-decelerated: var(--md-sys-motion-easing-decelerated);
+  --md-easing-linear: var(--md-sys-motion-easing-linear);
+
+  /* ─────────────────────────────────────────────
+     Spacing
+     ───────────────────────────────────────────── */
+  --md-sys-spacing-3xs: 1px;
+  --md-sys-spacing-2xs: 2px;
+  --md-sys-spacing-xs: 4px;
+  --md-sys-spacing-sm: 8px;
+  --md-sys-spacing-md: 12px;
+  --md-sys-spacing-lg: 16px;
+  --md-sys-spacing-xl: 20px;
+  --md-sys-spacing-2xl: 24px;
+  --md-sys-spacing-3xl: 32px;
+  --md-sys-spacing-4xl: 48px;
+  --md-sys-spacing-5xl: 64px;
+
+  --sp-0: var(--md-sys-spacing-3xs);
+  --sp-1: var(--md-sys-spacing-xs);
+  --sp-2: var(--md-sys-spacing-sm);
+  --sp-3: var(--md-sys-spacing-md);
+  --sp-4: var(--md-sys-spacing-lg);
+  --sp-5: var(--md-sys-spacing-xl);
+  --sp-6: var(--md-sys-spacing-2xl);
+  --sp-8: var(--md-sys-spacing-3xl);
+
+  /* ─────────────────────────────────────────────
+     Opacity (M3 state layer values)
+     ───────────────────────────────────────────── */
+  --md-sys-opacity-disabled: 0.38;
+  --md-sys-opacity-hover: 0.08;
+  --md-sys-opacity-focus: 0.12;
+  --md-sys-opacity-pressed: 0.12;
+  --md-sys-opacity-dragged: 0.16;
+  --md-sys-opacity-scrim: 0.4;
+  --md-sys-opacity-overlay: 0.6;
+  --md-sys-opacity-subtle: 0.06;
+  --md-sys-opacity-soft: 0.08;
+  --md-sys-opacity-medium: 0.1;
+  --md-sys-opacity-visible: 0.55;
+  --md-sys-opacity-prominent: 0.7;
+  --md-sys-opacity-full: 0.85;
+  --md-sys-opacity-dimmed: 0.6;
+
+  /* ─────────────────────────────────────────────
+     Blur / Backdrop
+     ───────────────────────────────────────────── */
+  --md-sys-blur-standard: 16px;
+  --md-sys-blur-heavy: 24px;
+  --md-sys-blur-light: 8px;
+
+  /* ─────────────────────────────────────────────
+     Component Sizes
+     ───────────────────────────────────────────── */
+  --md-sys-size-brand-min: 5rem;
+  --md-sys-size-dir-input: 18.75rem;
+  --md-sys-size-popover: 28.75rem;
+  --md-sys-size-toast-max: 22.5rem;
+  --md-sys-size-welcome-max: 35rem;
+  --md-sys-size-log-height: 11.25rem;
+  --md-sys-size-settings-max: 25rem;
+  --md-sys-size-textarea-min: 7.5rem;
+  --md-sys-size-guide-max: 21.25rem;
+  --md-sys-size-status-dot: 0.5rem;
+  --md-sys-size-res-chip-min: 3.25rem;
+  --md-sys-size-spinner-width: 5.25rem;
+  --md-sys-size-thumb-w: 5rem;
+  --md-sys-size-thumb-h: 2.8125rem;
+
+  /* M3 component-specific sizes */
+  --md-sys-size-btn-height: 2.5rem;
+  --md-sys-size-icon-btn: 2.5rem;
+  --md-sys-size-switch-track-w: 3.25rem;
+  --md-sys-size-switch-track-h: 2rem;
+  --md-sys-size-switch-thumb: 1rem;
+  --md-sys-size-switch-thumb-offset: 1.25rem;
+  --md-sys-size-list-item: 3.5rem;
+  --md-sys-size-tab-indicator: 3px;
+
+  /* Shorthand aliases */
+  --size-brand: var(--md-sys-size-brand-min);
+  --size-dir-input: var(--md-sys-size-dir-input);
+  --size-popover: var(--md-sys-size-popover);
+  --size-toast: var(--md-sys-size-toast-max);
+  --size-welcome: var(--md-sys-size-welcome-max);
+  --size-log: var(--md-sys-size-log-height);
+  --size-settings: var(--md-sys-size-settings-max);
+  --size-textarea: var(--md-sys-size-textarea-min);
+  --size-guide: var(--md-sys-size-guide-max);
+  --size-status-dot: var(--md-sys-size-status-dot);
+  --size-res-chip: var(--md-sys-size-res-chip-min);
+  --size-spinner: var(--md-sys-size-spinner-width);
+  --size-thumb-w: var(--md-sys-size-thumb-w);
+  --size-thumb-h: var(--md-sys-size-thumb-h);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Reduced Motion — Respects user preference
+   ═══════════════════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --md-sys-motion-duration-short1: 0ms;
+    --md-sys-motion-duration-short2: 0ms;
+    --md-sys-motion-duration-short3: 0ms;
+    --md-sys-motion-duration-short4: 0ms;
+    --md-sys-motion-duration-medium1: 0ms;
+    --md-sys-motion-duration-medium2: 0ms;
+    --md-sys-motion-duration-long1: 0ms;
+    --md-sys-motion-duration-long2: 0ms;
+    --md-duration-short: 0ms;
+    --md-duration-medium: 0ms;
+    --md-duration-long: 0ms;
+    --md-duration-extra-long: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
