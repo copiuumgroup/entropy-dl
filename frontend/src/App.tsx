@@ -3,6 +3,7 @@ import { connectSSE } from './lib/utils';
 import {
   fetchJobs,
   fetchConcurrency,
+  fetchEnv,
   updateConcurrency,
   createJobs,
   retryJob,
@@ -27,6 +28,7 @@ import SearchPanel from './components/SearchPanel';
 import LinksPanel from './components/LinksPanel';
 import JobCard from './components/JobCard';
 import SettingsPanel from './components/SettingsPanel';
+import WelcomeOverlay from './components/WelcomeOverlay';
 import LogDrawer from './components/LogDrawer';
 type ViewId = 'search' | 'queue' | 'settings' | 'log';
 
@@ -80,7 +82,7 @@ export default function App() {
   const [themePref, setThemePrefState] = useState<ThemePref>(() => {
     return (localStorage.getItem('theme_pref') as ThemePref) || 'system';
   });
-  // showWelcome removed — overlay eliminated
+  const [showWelcome, setShowWelcome] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   const [, setAppReady] = useState(false);
 
@@ -115,6 +117,13 @@ export default function App() {
       setJobs(j);
       setAppReady(true);
     }).catch(() => setAppReady(true));
+
+    // First-run detection: show welcome overlay if onboarding not completed
+    fetchEnv().then((env) => {
+      if (!env.onboarding_done) {
+        setShowWelcome(true);
+      }
+    }).catch(() => {});
 
     fetchConcurrency().then((workers) => {
       setOptions((prev) => ({ ...prev, concurrency: workers }));
@@ -309,8 +318,8 @@ export default function App() {
             <div className="rail-header-right">
               <button
                 className="btn ghost"
-                onClick={() => setShowInfo(true)}
-                aria-label="About"
+                onClick={() => setShowWelcome(true)}
+                aria-label="Welcome & help"
                 type="button"
               >
                 <span className="md-icon" aria-hidden="true">info</span>
@@ -427,6 +436,11 @@ export default function App() {
         </div>
       </div>
 
+      <WelcomeOverlay
+        open={showWelcome}
+        onClose={() => setShowWelcome(false)}
+        onOpenInfo={() => { setShowWelcome(false); setShowInfo(true); }}
+      />
       <InfoModal open={showInfo} onClose={() => setShowInfo(false)} />
     </>
     </ErrorBoundary>

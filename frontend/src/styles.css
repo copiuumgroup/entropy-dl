@@ -2575,7 +2575,200 @@ textarea:focus:not(:focus-visible) {
   gap: var(--sp-2);
 }
 
-/* ─── Info section tabs ─── */
+/* ═══════════════════════════════════════════════════════════════════════
+   Welcome Overlay — Step Indicator
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.welcome-dots {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) 0 var(--sp-1);
+}
+
+.welcome-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--md-outline-variant);
+  transition: background 0.3s ease, transform 0.3s ease;
+}
+
+.welcome-dot.active {
+  background: var(--md-primary);
+  transform: scale(1.25);
+}
+
+.welcome-hero-title {
+  font: var(--md-type-headline-large);
+  letter-spacing: -0.02em;
+  margin: 0 0 var(--sp-1);
+}
+
+.welcome-hero-sub {
+  font: var(--md-type-body-large);
+  color: var(--md-on-surface-variant);
+  margin: 0 0 var(--sp-5);
+}
+
+.welcome-bullets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.welcome-bullet {
+  font: var(--md-type-body-medium);
+  color: var(--md-on-surface-variant);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.welcome-bullet-icon {
+  font-size: 20px;
+  color: var(--md-primary);
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+/* Override .md-icon default size for bullet icons */
+.md-icon.welcome-bullet-icon {
+  font-size: 20px;
+}
+
+.welcome-platform {
+  font: var(--md-type-label-small);
+  color: var(--md-outline);
+  margin-top: var(--sp-4);
+}
+
+/* ─── Tool check cards ─── */
+
+.welcome-tool-card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--md-shape-xs);
+  background: var(--md-surface-container);
+  margin-bottom: var(--sp-2);
+}
+
+.welcome-tool-state {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 18px;
+}
+
+/* Override .md-icon default size when used inside the tool-state circle */
+.md-icon.welcome-tool-state {
+  font-size: 18px;
+}
+
+.welcome-tool-state.ok {
+  background: color-mix(in srgb, var(--md-success) var(--md-sys-opacity-medium), transparent);
+  color: var(--md-success);
+}
+
+.welcome-tool-state.missing {
+  background: color-mix(in srgb, var(--md-warning) var(--md-sys-opacity-medium), transparent);
+  color: var(--md-warning);
+}
+
+.welcome-tool-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.welcome-tool-name {
+  font: var(--md-type-label-large);
+  font-weight: 600;
+}
+
+.welcome-tool-ver {
+  font: var(--md-type-label-small);
+  color: var(--md-outline);
+}
+
+.welcome-tool-hint {
+  font: var(--md-type-label-small);
+  color: var(--md-warning);
+  margin-top: 2px;
+}
+
+.welcome-tool-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: var(--sp-1);
+}
+
+.welcome-tools-banner {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--md-shape-xs);
+  margin-bottom: var(--sp-4);
+  font: var(--md-type-body-medium);
+  text-align: center;
+}
+
+.welcome-tools-banner.all-ok {
+  background: color-mix(in srgb, var(--md-success) var(--md-sys-opacity-medium), transparent);
+  color: var(--md-success);
+}
+
+.welcome-tools-banner.some-missing {
+  background: color-mix(in srgb, var(--md-warning) var(--md-sys-opacity-medium), transparent);
+  color: var(--md-warning);
+}
+
+/* ─── Directory inputs (compact for welcome) ─── */
+
+.welcome-dir-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.welcome-dir-label {
+  font: var(--md-type-label-large);
+  font-weight: 500;
+  flex-shrink: 0;
+  min-width: 52px;
+}
+
+.welcome-dir-input {
+  flex: 1;
+  min-width: 0;
+  font: var(--md-type-body-medium);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--md-shape-xs);
+  background: var(--md-surface-container);
+  border: 1px solid var(--md-outline-variant);
+  color: var(--md-on-surface);
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.welcome-dir-input:focus {
+  border-color: var(--md-primary);
+}
+
+.welcome-dir-hint {
+  font: var(--md-type-label-small);
+  color: var(--md-outline);
+  margin-top: var(--sp-1);
+}
+
+/* ─── InfoModal ─── */
 
 .info-tabs-wrapper {
   flex-shrink: 0;

@@ -13,6 +13,11 @@ const api = axios.create({
 export const fetchEnv = (): Promise<import('../types').EnvData> =>
   api.get('/env').then(r => r.data);
 
+// ─── Onboarding ───
+
+export const completeOnboarding = (): Promise<void> =>
+  api.post('/onboarding').then(r => r.data);
+
 // ─── Settings ───
 
 export const fetchSettings = (): Promise<Settings> =>
