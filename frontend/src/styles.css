@@ -174,6 +174,10 @@ textarea::placeholder {
   flex-direction: column;
 }
 
+.flex-1 { flex: 1; }
+
+.items-center { align-items: center; }
+
 .gap-1 { gap: var(--sp-1); }
 .gap-2 { gap: var(--sp-2); }
 .gap-3 { gap: var(--sp-3); }
@@ -181,6 +185,25 @@ textarea::placeholder {
 
 .pad-2-x {
   padding: 0 var(--sp-2);
+}
+
+.pad-3 { padding: var(--sp-3); }
+.pad-4 { padding: var(--sp-4); }
+
+/* inline-label pairing for dir-row rows */
+.dir-row {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.dir-row-label {
+  min-width: 4.5rem;
+  font: var(--md-type-label-medium);
+  color: var(--md-on-surface-variant);
+  font-weight: 500;
+  white-space: nowrap;
+  letter-spacing: 0;
 }
 
 .st-fail {
@@ -559,6 +582,25 @@ textarea:focus:not(:focus-visible) {
 .outdir-input:focus {
   background: var(--md-surface-container-highest);
   border-radius: var(--md-shape-xl);
+}
+
+/* Standalone variant — used in SettingsPanel dir rows */
+.outdir-input.standalone {
+  flex: 1;
+  width: auto;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--md-surface-container-high);
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--md-shape-md);
+  transition: border-color var(--md-duration-short) var(--md-easing-standard),
+              background var(--md-duration-short) var(--md-easing-standard);
+}
+
+.outdir-input.standalone:focus {
+  background: var(--md-surface-container-highest);
+  border-color: var(--md-primary);
+  border-radius: var(--md-shape-md);
+  outline: none;
 }
 
 .outdir-bar .btn {
@@ -1087,6 +1129,12 @@ textarea:focus:not(:focus-visible) {
   font-weight: 600;
 }
 
+/* Icon inside the banner — sized and aligned via CSS, not inline style */
+.links-banner-icon {
+  font-size: 1.1em;
+  flex-shrink: 0;
+}
+
 /* ─── Search Icon (Material Symbols) — inside the field ─── */
 .search-icon {
   font-family: var(--font-symbols);
@@ -1585,6 +1633,40 @@ textarea:focus:not(:focus-visible) {
   overflow: hidden;
 }
 
+/* Thumbnail placeholder when no image is available */
+.result-card-thumb-placeholder {
+  background: var(--md-surface-variant);
+  width: 100%;
+  height: 100%;
+}
+
+/* Skeleton loading list */
+.skeleton-list {
+  padding: var(--sp-3) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.skeleton-row {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+  padding: var(--sp-3) var(--sp-4);
+}
+
+/* Load more button row */
+.load-more-row {
+  padding: var(--sp-2) 0;
+  display: flex;
+  justify-content: center;
+}
+
+/* Check icon inside selection chip */
+.search-icon-sm {
+  font-size: var(--text-sm);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
    Selection Bar
    ═══════════════════════════════════════════════════════════════════════ */
@@ -1769,6 +1851,34 @@ textarea:focus:not(:focus-visible) {
   font-weight: 500;
 }
 
+/* Smart-routing detected-type badge (sibling of status badge) */
+.queue-type-badge {
+  font: var(--md-type-label-small);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border-radius: var(--md-shape-full);
+  flex-shrink: 0;
+  padding: var(--md-sys-spacing-2xs) var(--sp-3);
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.queue-type-badge[data-media="music"] {
+  background: color-mix(in srgb, var(--md-tertiary) var(--md-sys-opacity-medium), transparent);
+  color: var(--md-tertiary);
+  border-color: var(--md-tertiary);
+}
+.queue-type-badge[data-media="audio"] {
+  background: color-mix(in srgb, var(--md-primary) var(--md-sys-opacity-medium), transparent);
+  color: var(--md-primary);
+  border-color: var(--md-primary);
+}
+.queue-type-badge[data-media="video"] {
+  background: color-mix(in srgb, var(--md-secondary) var(--md-sys-opacity-medium), transparent);
+  color: var(--md-secondary);
+  border-color: var(--md-secondary);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
    Progress Bar — M3 Linear Progress (indeterminate via Framer Motion)
    ═══════════════════════════════════════════════════════════════════════ */
@@ -1901,6 +2011,11 @@ textarea:focus:not(:focus-visible) {
   display: flex;
 }
 
+/* Full-width setting — spans all grid columns */
+.setting-full {
+  grid-column: 1 / -1;
+}
+
 .setting:last-child {
   border-right: none;
 }
@@ -1911,6 +2026,13 @@ textarea:focus:not(:focus-visible) {
   text-transform: none;
   color: var(--md-on-surface-variant);
   font-weight: 500;
+}
+
+.setting-hint {
+  font: var(--md-type-body-small);
+  color: var(--md-outline);
+  letter-spacing: 0;
+  margin-top: var(--sp-1);
 }
 
 .chip-row {
@@ -2028,6 +2150,12 @@ textarea:focus:not(:focus-visible) {
 
 .m3-switch-item:hover::before {
   opacity: var(--md-sys-opacity-hover);
+}
+
+/* Text label inside a switch row — sits above the ::before state-layer */
+.m3-switch-label {
+  position: relative;
+  z-index: 2;
 }
 
 .m3-switch {
@@ -2370,8 +2498,8 @@ textarea:focus:not(:focus-visible) {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: min(90vw, 36rem);
-  max-height: 85vh;
+  width: min(92vw, 44rem);
+  max-height: 88vh;
   background: var(--md-surface-container-high);
   border-radius: var(--md-shape-xl);
   box-shadow: var(--md-shadow-3);
@@ -2424,10 +2552,20 @@ textarea:focus:not(:focus-visible) {
 }
 
 .m3-dialog-body {
-  padding: var(--sp-4) var(--sp-6);
+  padding: var(--sp-4) var(--sp-6) var(--sp-6);
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  /* Top shadow when scrolled — hints that content is clipped above */
+  background-image: linear-gradient(var(--md-surface-container-high) 0%, transparent 0%);
+  background-repeat: no-repeat;
+  background-size: 100% var(--sp-2);
+  background-attachment: local;
+}
+
+/* Pseudo-element to show a subtle shadow at the top of the scrolled body */
+.m3-dialog-body.scrolled {
+  box-shadow: inset 0 8px 6px -6px rgba(0, 0, 0, 0.08);
 }
 
 .m3-dialog-actions {
@@ -2439,16 +2577,17 @@ textarea:focus:not(:focus-visible) {
 
 /* ─── Info section tabs ─── */
 
-.info-tabs {
-  display: flex;
-  gap: var(--sp-1);
-  padding: var(--sp-3) var(--sp-6) 0;
-  overflow-x: auto;
-  scrollbar-width: none;
+.info-tabs-wrapper {
+  flex-shrink: 0;
 }
 
-.info-tabs::-webkit-scrollbar {
-  display: none;
+.info-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  /* Tight horizontally, a little more air between wrapped rows */
+  column-gap: var(--sp-1);
+  row-gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-6) var(--sp-2);
 }
 
 .info-tab {
@@ -2489,6 +2628,22 @@ textarea:focus:not(:focus-visible) {
 
 .info-body {
   min-height: 0;
+  padding-bottom: var(--sp-4);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--md-on-surface-variant) 30%, transparent) transparent;
+}
+
+.info-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.info-body::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--md-on-surface-variant) 30%, transparent);
+  border-radius: 3px;
+}
+
+.info-body::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .info-section h3 {
@@ -2716,14 +2871,19 @@ textarea:focus:not(:focus-visible) {
   border: none;
   width: var(--md-sys-spacing-3xl);
   height: var(--md-sys-spacing-3xl);
-  font-family: var(--font-ui);
-  font-size: var(--md-sys-typescale-size-lg);
   place-items: center;
-  font-weight: 700;
   display: grid;
   border-radius: var(--md-shape-lg);
   background: var(--md-primary);
   color: var(--md-on-primary);
+  overflow: hidden;
+  /* Let the inline brand SVG fill the tile with a little breathing room */
+  padding: var(--sp-1);
+}
+
+.nav-rail-brand .brand-mark svg {
+  width: 100%;
+  height: 100%;
 }
 
 /* ─── Destinations column ─── */
@@ -2792,16 +2952,15 @@ textarea:focus:not(:focus-visible) {
   font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
 }
 
-/* ─── Nav Rail state layer override — M3 spec: circle on icon, not full-item oval ─── */
+/* ─── Nav Rail state layer override — full-item pill matching the indicator ─── */
 .nav-rail-item::before {
-  /* Override the shared inset:0 full-fill. Use a 40dp circle centered on the icon area. */
   inset: auto;
-  width: 2.5rem;
-  height: 2.5rem;
+  width: 3.5rem;
+  height: var(--md-sys-size-list-item, 56px);
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -70%); /* -70% shifts circle up to center on icon (above label) */
-  border-radius: var(--md-shape-full);
+  transform: translate(-50%, -50%);
+  border-radius: var(--md-shape-xl);
 }
 
 /* ─── Active indicator circle — positioned by Framer Motion, not CSS ─── */
@@ -2963,10 +3122,14 @@ textarea:focus:not(:focus-visible) {
   .nav-rail-indicator {
     width: 2.5rem;
     height: 2.5rem;
+    border-radius: var(--md-shape-full);
   }
 
   /* No label — center the hover circle dead-center */
   .nav-rail-item::before {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: var(--md-shape-full);
     transform: translate(-50%, -50%);
   }
 

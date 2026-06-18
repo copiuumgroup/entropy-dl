@@ -68,6 +68,15 @@ const JobCard = memo(function JobCard({ job, onRetry, onRemove, onOpenFolder }: 
           >
             {statusLabel}
           </span>
+          {job.options?.media_type && (
+            <span
+              className="queue-type-badge"
+              data-media={job.options.media_type}
+              title={`Detected as ${job.options.media_type} by smart routing`}
+            >
+              {job.options.media_type.toUpperCase()}
+            </span>
+          )}
           <span className="queue-title" title={job.title || job.url}>
             {job.title || job.url}
           </span>

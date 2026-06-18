@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   Entropy // Media Lift — TypeScript Type Definitions
+   Entropy DL — TypeScript Type Definitions
    ═══════════════════════════════════════════════════════════════ */
 
 // ─── Job Status ───
@@ -27,6 +27,7 @@ export interface Job {
   eta: string;
   output_file: string;
   error: string;
+  options?: JobOptions;
 }
 
 // ─── Search Result ───
@@ -60,7 +61,10 @@ export interface EnvData {
 // ─── Settings ───
 
 export interface Settings {
-  output_dir: string;
+  audio_dir: string;
+  video_dir: string;
+  bandwidth_limit?: string;
+  smart_routing?: boolean;
 }
 
 // ─── Job Options ───
@@ -78,10 +82,12 @@ export interface JobOptions {
   embed_thumb: boolean;
   engine: Engine;
   cookies_browser: CookiesBrowser;
-  output_dir: string;
+  audio_dir: string;
+  video_dir: string;
   scrape_delay: boolean;
   concurrency: number;
   resolution: Resolution;
+  media_type?: string; // 'music' | 'audio' | 'video' when smart routing detected a type
 }
 
 // ─── SSE Events ───
@@ -146,10 +152,6 @@ export interface LogDrawerProps {
   logs: LogEntry[];
 }
 
-export interface OutputDirBarProps {
-  onToast: (msg: string, isErr?: boolean) => void;
-}
-
 export interface SearchPanelProps {
   source: Source;
   selected: Record<string, boolean>;
@@ -166,6 +168,8 @@ export interface SettingsPanelProps {
   setOptions: React.Dispatch<React.SetStateAction<JobOptions>>;
   themePref: ThemePref;
   setThemePref: (t: ThemePref) => void;
+  smartRouting: boolean;
+  setSmartRouting: (enabled: boolean) => void;
 }
 
 export interface WelcomeOverlayProps {

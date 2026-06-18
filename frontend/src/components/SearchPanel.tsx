@@ -95,11 +95,11 @@ export default function SearchPanel({ source, selected, onToggle, onAddAll, onRe
       </form>
 
       <div className="results-meta">
-        <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+        <span className="flex items-center gap-2">
           {!loading && `${results.length} results · ${selectedCount} selected`}
         </span>
         {results.length > 0 && (
-          <div style={{ display: 'flex', gap: 'var(--sp-1)' }}>
+          <div className="flex gap-1">
             <button className="btn ghost" onClick={() => onAddAll(results)}>
               Select all
             </button>
@@ -134,12 +134,12 @@ export default function SearchPanel({ source, selected, onToggle, onAddAll, onRe
 
       {/* Skeleton loading state */}
       {loading && results.length === 0 && (
-        <div style={{ padding: 'var(--sp-3) var(--sp-4)', display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
+        <div className="skeleton-list">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} style={{ display: 'flex', gap: 'var(--sp-3)', alignItems: 'center', padding: 'var(--sp-3) var(--sp-4)' }}>
+            <div key={i} className="skeleton-row">
               <M3Skeleton variant="rect" width={20} height={20} />
               <M3Skeleton variant="rect" width={60} height={40} />
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div className="flex flex-col gap-2 flex-1">
                 <M3Skeleton variant="text" width="70%" />
                 <M3Skeleton variant="text" width="40%" />
               </div>
@@ -164,7 +164,7 @@ export default function SearchPanel({ source, selected, onToggle, onAddAll, onRe
                 >
                   <div className="result-card-checkbox" aria-checked={isSelected}>
                     <div className="result-checkbox" aria-checked={isSelected}>
-                      {isSelected ? <span className="search-icon" style={{ fontSize: 'var(--text-sm)' }}>check</span> : ''}
+                      {isSelected ? <span className="search-icon search-icon-sm">check</span> : ''}
                     </div>
                   </div>
                   <div className="result-card-source" data-source={item.source}>{item.source}</div>
@@ -173,7 +173,7 @@ export default function SearchPanel({ source, selected, onToggle, onAddAll, onRe
                     {item.thumbnail ? (
                       <img className="result-card-thumb" src={item.thumbnail} alt="" loading="lazy" />
                     ) : (
-                      <div className="result-card-thumb" style={{ background: 'var(--md-surface-variant)' }}></div>
+                      <div className="result-card-thumb result-card-thumb-placeholder"></div>
                     )}
                     <div className="result-card-gradient"></div>
                     <div className="result-card-duration">{formatDuration(item.duration)}</div>
@@ -190,7 +190,7 @@ export default function SearchPanel({ source, selected, onToggle, onAddAll, onRe
         </M3Stagger>
 
         {results.length > 0 && !loading && !error && (
-          <div className="pad-2-x" style={{ textAlign: 'center' }}>
+          <div className="load-more-row">
             <button className="btn ghost" onClick={loadMore} disabled={loadingMore}>
               {loadingMore ? 'Loading…' : 'Load more'}
             </button>

@@ -1,0 +1,31 @@
+# Normalize line endings: text files checked out with LF in the repo,
+# auto-converted to the platform native ending in the working tree.
+* text=auto
+
+# Force LF for source code that is sensitive to it
+*.go    text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.jsx   text eol=lf
+*.json  text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.sh    text eol=lf
+*.bat   text eol=crlf
+*.mod   text eol=lf
+*.sum   text eol=lf
+
+# Treat binaries as binary — never touch line endings
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.svg   binary
+*.db    binary
+*.exe   binary
+*.tar.gz binary
+*.zip   binary

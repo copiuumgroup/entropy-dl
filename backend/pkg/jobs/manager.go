@@ -1,17 +1,18 @@
 package jobs
 
 import (
-        "context"
-        "fmt"
-        "os"
-        "os/exec"
-        "path/filepath"
-        "regexp"
-        "sort"
-        "strconv"
-        "strings"
-        "sync"
-        "time"
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
         "entropy-gui/pkg/cleaner"
         "entropy-gui/pkg/cmdutil"
@@ -47,11 +48,13 @@ type Options struct {
         EmbedMeta      bool   `json:"embed_meta"`
         EmbedThumb     bool   `json:"embed_thumb"`
         Engine         string `json:"engine"` // "ytdlp" or "aria2c"
-        OutputDir      string `json:"output_dir"`
+        AudioDir       string `json:"audio_dir"`
+        VideoDir       string `json:"video_dir"`
         CookiesBrowser string `json:"cookies_browser"` // "" | chrome | edge | firefox | brave | chromium | opera | safari | vivaldi
         ScrapeDelay    bool   `json:"scrape_delay"`    // randomized sleep between requests to avoid 429s
         Resolution     string `json:"resolution"`      // "BEST", "4K", "1440p", "1080p", "720p", "480p"
         BandwidthLimit string `json:"bandwidth_limit"` // "5M", "1M", "500K", "0" = unlimited
+        MediaType      string `json:"media_type"`      // "music", "audio", "video" when smart routing detected a type; "" otherwise
 }
 
 type Job struct {
@@ -110,12 +113,14 @@ type Manager struct {
         ytdlp         string
         aria2c        string
         ffmpeg        string
-        output        string
+        audioDir      string
+        videoDir      string
         workers       int
         activeWorkers int
 
         // Global defaults (can be overridden per-job via Options)
         defaultBandwidth string
+        smartRouting    bool
 
         // Persistence
         saveJob   func(j *Job)
@@ -130,7 +135,7 @@ type Manager struct {
         logDebounceTimer  *time.Timer
 }
 
-func NewManager(ytdlpBin, aria2cBin, ffmpegBin, outputDir string, workers int) *Manager {
+func NewManager(ytdlpBin, aria2cBin, ffmpegBin, audioDir, videoDir string, workers int) *Manager {
         if workers <= 0 {
                 workers = 2
         }
@@ -143,7 +148,8 @@ func NewManager(ytdlpBin, aria2cBin, ffmpegBin, outputDir string, workers int) *
                 ytdlp:   ytdlpBin,
                 aria2c:  aria2cBin,
                 ffmpeg:  ffmpegBin,
-                output:  outputDir,
+                audioDir: audioDir,
+                videoDir: videoDir,
                 workers: workers,
         }
         for i := 0; i < workers; i++ {
@@ -156,18 +162,41 @@ func NewManager(ytdlpBin, aria2cBin, ffmpegBin, outputDir string, workers int) *
 // drain remaining jobs and then exit. Called during graceful shutdown
 // to prevent goroutine leaks.
 func (m *Manager) Close() {
-        m.mu.Lock()
-        m.closed = true
-        m.mu.Unlock()
-        close(m.queue)
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	close(m.queue)
 }
 
-// SetOutput updates the default output directory for new jobs.
-func (m *Manager) SetOutput(dir string) {
-        m.mu.Lock()
-        m.output = dir
-        m.mu.Unlock()
+// tryEnqueue hands a job ID to the worker pool without blocking.
+//
+// The queue is buffered (1024) but never the source of truth: every job
+// is stored in m.jobs with StatusQueued and broadcast to SSE clients before
+// we try to enqueue it. If the buffer is momentarily full (e.g. a bulk
+// import while workers are saturated), this returns false instead of
+// blocking the caller forever — which previously could deadlock HTTP
+// handler goroutines. The job stays queued and is never lost; workers
+// drain the buffer and the job remains visible/retryable in the UI.
+//
+// Callers that hold a context can also pass ctx so the enqueue attempt is
+// cancelled when the request is aborted (avoids pointless sends).
+func (m *Manager) tryEnqueue(ctx context.Context, id string) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case m.queue <- id:
+		return true
+	case <-ctx.Done():
+		log.Printf("[jobs] enqueue cancelled for job %s: %v", id, ctx.Err())
+		return false
+	default:
+		log.Printf("[jobs] queue full, job %s held as queued (workers will catch up)", id)
+		return false
+	}
 }
+
+
 
 // Workers returns the current max worker count.
 func (m *Manager) Workers() int {
@@ -190,11 +219,32 @@ func (m *Manager) SetWorkers(n int) {
         m.workers = n
 }
 
-// Output returns the current default output directory.
-func (m *Manager) Output() string {
+// AudioDir returns the global audio output directory.
+func (m *Manager) AudioDir() string {
         m.mu.RLock()
         defer m.mu.RUnlock()
-        return m.output
+        return m.audioDir
+}
+
+// VideoDir returns the global video output directory.
+func (m *Manager) VideoDir() string {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        return m.videoDir
+}
+
+// SetAudioDir sets a new global audio output directory.
+func (m *Manager) SetAudioDir(dir string) {
+        m.mu.Lock()
+        defer m.mu.Unlock()
+        m.audioDir = dir
+}
+
+// SetVideoDir sets a new global video output directory.
+func (m *Manager) SetVideoDir(dir string) {
+        m.mu.Lock()
+        defer m.mu.Unlock()
+        m.videoDir = dir
 }
 
 // Bandwidth returns the current global default bandwidth limit string.
@@ -212,6 +262,20 @@ func (m *Manager) SetBandwidth(limit string) {
         m.mu.Lock()
         defer m.mu.Unlock()
         m.defaultBandwidth = limit
+}
+
+// SmartRouting returns whether per-item content-type detection is enabled.
+func (m *Manager) SmartRouting() bool {
+        m.mu.RLock()
+        defer m.mu.RUnlock()
+        return m.smartRouting
+}
+
+// SetSmartRouting enables or disables per-item content-type detection.
+func (m *Manager) SetSmartRouting(enabled bool) {
+        m.mu.Lock()
+        defer m.mu.Unlock()
+        m.smartRouting = enabled
 }
 
 // AttachPersistence wires a persist callback and seeds jobs from a previous run.
@@ -379,51 +443,91 @@ func (m *Manager) DuplicateCount(urls []string) int {
 
 // AddURLs queues one or more URLs. Playlists are expanded.
 func (m *Manager) AddURLs(ctx context.Context, urls []string, opts Options) ([]*Job, error) {
-        if opts.OutputDir == "" {
-                opts.OutputDir = m.output
+        if opts.AudioDir == "" {
+                opts.AudioDir = m.audioDir
         }
-        _ = os.MkdirAll(opts.OutputDir, 0o755)
+        if opts.VideoDir == "" {
+                opts.VideoDir = m.videoDir
+        }
+        _ = os.MkdirAll(opts.AudioDir, 0o755)
+        _ = os.MkdirAll(opts.VideoDir, 0o755)
 
-        var created []*Job
-        for _, rawURL := range urls {
-                u := cleaner.CleanURL(rawURL)
-                if u == "" {
-                        continue
-                }
-                // Dedup: skip if this URL was already successfully downloaded
-                if m.IsDuplicateURL(u) {
-                        continue
-                }
-                // Probe quickly to expand playlists; failures still queue raw URL.
-                pctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-                metas, err := ytdlp.Probe(pctx, m.ytdlp, u)
-                cancel()
-                if err != nil || len(metas) == 0 {
-                        j := m.newJob(u, "", "", "", 0, opts)
-                        created = append(created, j)
-                        continue
-                }
-                for _, meta := range metas {
-                        jurl := meta.URL
-                        if jurl == "" {
-                                jurl = u
-                        }
-                        if m.IsDuplicateURL(jurl) {
-                                continue
-                        }
-                        j := m.newJob(jurl, meta.Title, meta.Uploader, meta.Thumbnail, meta.Duration, opts)
-                        created = append(created, j)
-                }
-        }
-        return created, nil
+	var created []*Job
+	for _, rawURL := range urls {
+		// Honor request cancellation between URLs so an aborted batch
+		// (or an expiring outer context) unwinds promptly instead of
+		// running every remaining probe.
+		if err := ctx.Err(); err != nil {
+			return created, err
+		}
+		u := cleaner.CleanURL(rawURL)
+		if u == "" {
+			continue
+		}
+		// Dedup: skip if this URL was already successfully downloaded
+		if m.IsDuplicateURL(u) {
+			continue
+		}
+		// Probe to expand playlists/albums (e.g. a 65-track SoundCloud set).
+		// Previously this was capped at 25s, which was too short for slowly
+		// paginating sources — yt-dlp would be killed mid-output and its
+		// partial JSON silently produced a truncated set of jobs.
+		pctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+		metas, err := ytdlp.Probe(pctx, m.ytdlp, u)
+		cancel()
+		if err != nil || len(metas) == 0 {
+				// Probe failed entirely — queue the raw URL as a single job and
+				// let the download phase handle expansion as a fallback.
+				if err != nil {
+					log.Printf("[jobs] probe failed for %s: %v (queuing raw URL)", u, err)
+				}
+				itemOpts := opts
+				if m.smartRouting {
+					mt := DetectMediaType("", u, 0)
+					itemOpts = opts.WithMediaType(mt)
+				}
+				j := m.newJobCtx(ctx, u, "", "", "", 0, itemOpts)
+			created = append(created, j)
+			continue
+		}
+		// yt-dlp's n_entries reports the full playlist size even when fewer
+		// entries are returned, so a mismatch is a reliable signal that the
+		// probe was truncated (timeout, extractor limit, or network error).
+		if metas[0].NEntries > 0 && len(metas) < metas[0].NEntries {
+			log.Printf("[jobs] playlist probe returned %d of %d entries for %s (may be truncated)",
+				len(metas), metas[0].NEntries, u)
+		}
+			for _, meta := range metas {
+				jurl := meta.URL
+				if jurl == "" {
+					jurl = u
+				}
+				if m.IsDuplicateURL(jurl) {
+					continue
+				}
+				// Smart routing: detect content type and adjust format/dir per-item.
+				itemOpts := opts
+				if m.smartRouting {
+					mt := DetectMediaType(meta.Extractor, jurl, meta.Duration)
+					itemOpts = opts.WithMediaType(mt)
+				}
+				j := m.newJobCtx(ctx, jurl, meta.Title, meta.Uploader, meta.Thumbnail, meta.Duration, itemOpts)
+			created = append(created, j)
+		}
+	}
+	return created, nil
 }
 
 // AddDirect creates one job per URL with provided title (no probing).
 func (m *Manager) AddDirect(items []DirectItem, opts Options) []*Job {
-        if opts.OutputDir == "" {
-                opts.OutputDir = m.output
+        if opts.AudioDir == "" {
+                opts.AudioDir = m.audioDir
         }
-        _ = os.MkdirAll(opts.OutputDir, 0o755)
+        if opts.VideoDir == "" {
+                opts.VideoDir = m.videoDir
+        }
+        _ = os.MkdirAll(opts.AudioDir, 0o755)
+        _ = os.MkdirAll(opts.VideoDir, 0o755)
         var created []*Job
         for _, it := range items {
                 u := cleaner.CleanURL(it.URL)
@@ -433,7 +537,13 @@ func (m *Manager) AddDirect(items []DirectItem, opts Options) []*Job {
                 if m.IsDuplicateURL(u) {
                         continue
                 }
-                j := m.newJob(u, it.Title, it.Uploader, it.Thumbnail, it.Duration, opts)
+                // Smart routing: detect content type from URL + duration (no extractor).
+                itemOpts := opts
+                if m.smartRouting {
+                        mt := DetectMediaType("", u, it.Duration)
+                        itemOpts = opts.WithMediaType(mt)
+                }
+                j := m.newJob(u, it.Title, it.Uploader, it.Thumbnail, it.Duration, itemOpts)
                 created = append(created, j)
         }
         return created
@@ -448,29 +558,35 @@ type DirectItem struct {
 }
 
 func (m *Manager) newJob(u, title, uploader, thumb string, duration float64, opts Options) *Job {
-        j := &Job{
-                ID:        uuid.NewString(),
-                URL:       u,
-                Title:     title,
-                Uploader:  uploader,
-                Thumbnail: thumb,
-                Duration:  duration,
-                Status:    StatusQueued,
-                Stage:     "queued",
-                Options:   opts,
-                CreatedAt: time.Now(),
-                UpdatedAt: time.Now(),
-        }
-        m.mu.Lock()
-        m.jobs[j.ID] = j
-        m.order = append(m.order, j.ID)
-        closed := m.closed
-        m.mu.Unlock()
-        m.updateJob(j)
-        if !closed {
-                m.queue <- j.ID // safe: buffer is 1024, queue not full for normal usage
-        }
-        return j
+	return m.newJobCtx(context.Background(), u, title, uploader, thumb, duration, opts)
+}
+
+// newJobCtx is like newJob but plumbs a context into the enqueue step so a
+// full queue (or an aborted request) can't block the caller forever.
+func (m *Manager) newJobCtx(ctx context.Context, u, title, uploader, thumb string, duration float64, opts Options) *Job {
+	j := &Job{
+		ID:        uuid.NewString(),
+		URL:       u,
+		Title:     title,
+		Uploader:  uploader,
+		Thumbnail: thumb,
+		Duration:  duration,
+		Status:    StatusQueued,
+		Stage:     "queued",
+		Options:   opts,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	m.mu.Lock()
+	m.jobs[j.ID] = j
+	m.order = append(m.order, j.ID)
+	closed := m.closed
+	m.mu.Unlock()
+	m.updateJob(j)
+	if !closed {
+		m.tryEnqueue(ctx, j.ID)
+	}
+	return j
 }
 
 func (m *Manager) Get(id string) (*Job, bool) {
@@ -494,18 +610,18 @@ func (m *Manager) Retry(id string) bool {
                 m.mu.Unlock()
                 return false
         }
-        j.Status = StatusQueued
-        j.Progress = 0
-        j.Error = ""
-        j.Stage = "queued"
-        j.UpdatedAt = time.Now()
-        closed := m.closed
-        m.mu.Unlock()
-        m.updateJob(j)
-        if !closed {
-                m.queue <- id
-        }
-        return true
+	j.Status = StatusQueued
+	j.Progress = 0
+	j.Error = ""
+	j.Stage = "queued"
+	j.UpdatedAt = time.Now()
+	closed := m.closed
+	m.mu.Unlock()
+	m.updateJob(j)
+	if !closed {
+		m.tryEnqueue(context.Background(), id)
+	}
+	return true
 }
 
 // RetryAllFailed re-queues all failed and canceled jobs. Returns count of retried jobs.
@@ -530,18 +646,18 @@ func (m *Manager) RetryAllFailed() int {
         m.mu.RLock()
         closed := m.closed
         m.mu.RUnlock()
-        for _, id := range ids {
-                m.mu.RLock()
-                j, ok := m.jobs[id]
-                m.mu.RUnlock()
-                if ok {
-                        m.updateJob(j) // broadcast the real job with all its fields
-                }
-                if !closed {
-                        m.queue <- id
-                }
-        }
-        return len(ids)
+	for _, id := range ids {
+		m.mu.RLock()
+		j, ok := m.jobs[id]
+		m.mu.RUnlock()
+		if ok {
+			m.updateJob(j) // broadcast the real job with all its fields
+		}
+		if !closed {
+			m.tryEnqueue(context.Background(), id)
+		}
+	}
+	return len(ids)
 }
 
 func (m *Manager) Remove(id string) bool {
@@ -603,14 +719,10 @@ func (m *Manager) cleanupPartialFiles(j *Job) {
                 return
         }
         m.mu.RLock()
-        outDir := j.Options.OutputDir
-        if outDir == "" {
-                outDir = m.output
-        }
         outputFile := j.OutputFile
         m.mu.RUnlock()
 
-        if outDir == "" || outputFile == "" {
+        if outputFile == "" {
                 return
         }
 
@@ -702,7 +814,10 @@ var mergeRe = regexp.MustCompile(`\[(?:Merger|ExtractAudio|EmbedThumbnail|Metada
 // Uses atomic write (temp file + rename) to prevent corruption on crash.
 func (m *Manager) logDeadLink(j *Job) {
         m.mu.RLock()
-        outDir := m.output
+        outDir := m.videoDir
+        if outDir == "" {
+                outDir = m.audioDir
+        }
         m.mu.RUnlock()
         csv := filepath.Join(outDir, "dead_links.csv")
         m.ioMu.Lock()
@@ -738,8 +853,11 @@ func (m *Manager) execute(ctx context.Context, j *Job) error {
         if opts.Format == "" {
                 opts.Format = "mp3"
         }
-        if opts.OutputDir == "" {
-                opts.OutputDir = m.output
+        if opts.AudioDir == "" {
+                opts.AudioDir = m.audioDir
+        }
+        if opts.VideoDir == "" {
+                opts.VideoDir = m.videoDir
         }
 
         // Intelligent Folder Routing
@@ -777,16 +895,17 @@ func (m *Manager) execute(ctx context.Context, j *Job) error {
                 }
         }
 
+        finalDir := opts.VideoDir
         if isAudio {
-                opts.OutputDir = filepath.Join(opts.OutputDir, "Entropy Music")
+                finalDir = opts.AudioDir
         } else if isVideo {
-                opts.OutputDir = filepath.Join(opts.OutputDir, "Entropy Videos")
+                finalDir = opts.VideoDir
         }
 
-        _ = os.MkdirAll(opts.OutputDir, 0o755)
+        _ = os.MkdirAll(finalDir, 0o755)
 
         // Disk space guard: refuse to start if disk is too full.
-        if err := diskguard.Check(opts.OutputDir, 0); err != nil {
+        if err := diskguard.Check(finalDir, 0); err != nil {
                 return fmt.Errorf("disk guard: %w", err)
         }
 
@@ -795,7 +914,7 @@ func (m *Manager) execute(ctx context.Context, j *Job) error {
                 "--no-warnings",
                 "--progress",
                 "--no-mtime",
-                "-o", filepath.Join(opts.OutputDir, "%(title)s.%(ext)s"),
+                "-o", filepath.Join(finalDir, "%(title)s.%(ext)s"),
                 "--print", "after_move:FINAL_FILE=%(filepath)s",
                 // Resilience against transient YouTube 403s + connection resets.
                 "--retries", "10",

@@ -1,20 +1,21 @@
 import {
-  SchemeMonochrome,
+  SchemeContent,
   Hct,
   argbFromHex,
   hexFromArgb,
 } from '@material/material-color-utilities';
 
 // ─── Default Seed Colors (per OS) ───
-
+// Used only as a last-resort fallback if the backend can't read
+// the OS accent color. Picked to look good on their respective platforms.
 export const DEFAULT_SEEDS: Record<string, string> = {
-  windows: '#757575',
-  darwin: '#757575',
-  macos: '#757575',
-  linux: '#757575',
+  windows: '#4285F4',
+  darwin: '#0A84FF',
+  macos: '#0A84FF',
+  linux: '#4285F4',
 };
 
-export const EXPRESSIVE_DEFAULT = '#757575';
+export const EXPRESSIVE_DEFAULT = '#4285F4';
 
 export interface M3Scheme {
   primary: string; onPrimary: string; primaryContainer: string; onPrimaryContainer: string;
@@ -34,7 +35,9 @@ export interface M3Scheme {
 export function generateScheme(seedHex: string, isDark: boolean): M3Scheme {
   const seedArgb = argbFromHex(seedHex);
   const hct = Hct.fromInt(seedArgb);
-  const scheme = new SchemeMonochrome(hct, isDark, 0.0);
+  // SchemeContent keeps the seed's hue and chroma, producing a true
+  // accent-colored M3 palette that follows the user's OS accent color.
+  const scheme = new SchemeContent(hct, isDark, 0.0);
 
   return {
     primary: hexFromArgb(scheme.primary),

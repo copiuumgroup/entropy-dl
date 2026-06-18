@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════════════
-#  Entropy // Media Lift — Build Script
+#  Entropy DL — Build Script
 #  Usage: ./build.sh [dev|release|clean]
 #
 #  dev     — frontend only, vite dev server (hot reload)
@@ -88,7 +88,7 @@ cmd_clean() {
 
 cmd_release() {
   local total_steps=6
-  c_bold "=== Entropy // Media Lift — Build v${VERSION} ==="
+  c_bold "=== Entropy DL — Build v${VERSION} ==="
   echo "  Platform:  ${PLATFORM}"
   echo "  Binary:    ${BINARY_NAME}"
   echo "  Release:   ${RELEASES_DIR}/"
@@ -146,7 +146,7 @@ cmd_release() {
 
   # Copy build info
   cat > "$STAGING_DIR/$STAGE_NAME/RELEASE_INFO" <<EOF
-Entropy // Media Lift
+Entropy DL
 Version:  ${VERSION}
 Platform: ${PLATFORM}
 Built:    $(date -u '+%Y-%m-%dT%H:%M:%SZ')

@@ -13,16 +13,16 @@ const api = axios.create({
 export const fetchEnv = (): Promise<import('../types').EnvData> =>
   api.get('/env').then(r => r.data);
 
-export const completeOnboarding = (): Promise<void> =>
-  api.post('/onboarding').then(r => r.data);
-
 // ─── Settings ───
 
 export const fetchSettings = (): Promise<Settings> =>
   api.get('/settings').then(r => r.data);
 
-export const saveOutputDir = ({ output_dir }: { output_dir: string }): Promise<Settings> =>
-  api.post('/settings', { output_dir }).then(r => r.data);
+export const saveOutputDirs = (dirs: { audio_dir: string; video_dir: string }): Promise<Settings> =>
+  api.post('/settings', dirs).then(r => r.data);
+
+export const setSmartRouting = (enabled: boolean): Promise<{ smart_routing: boolean }> =>
+  api.post('/smart-routing', { enabled }).then(r => r.data);
 
 // ─── Search ───
 

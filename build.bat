@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 :: ═══════════════════════════════════════════════════════════════════════
-::  Entropy // Media Lift — Build Script (Windows)
+::  Entropy DL — Build Script (Windows)
 ::  Usage: build.bat [release|clean]
 :: ═══════════════════════════════════════════════════════════════════════
 
@@ -13,7 +13,7 @@ set "RELEASES_DIR=%APP_DIR%releases"
 set "BINARY_NAME=entropy.exe"
 
 :: ─── Version ───
-set "VERSION=0.1.0"
+set "VERSION=dev"
 if exist "%APP_DIR%VERSION" (
   set /p VERSION=<"%APP_DIR%VERSION"
   set "VERSION=!VERSION: =!"
@@ -30,13 +30,13 @@ goto :eof
 
 :: ───────────────────────────────────────────────────────────────────
 :release
-echo === Entropy // Media Lift v%VERSION% - Release Build ===
+echo === Entropy DL v%VERSION% - Release Build ===
 echo.
 
 :: 1. Install frontend deps
 echo   [1/5] Installing frontend dependencies...
 cd /d "%FRONTEND_DIR%"
-call npm install --silent
+call npm.cmd install --legacy-peer-deps --silent
 if errorlevel 1 (
   echo   ERROR: npm install failed
   exit /b 1
@@ -44,7 +44,7 @@ if errorlevel 1 (
 
 :: 2. Build frontend
 echo   [2/5] Building frontend (tsc + vite)...
-call npm run build --silent
+call npm.cmd run build --silent
 if errorlevel 1 (
   echo   ERROR: Frontend build failed
   exit /b 1

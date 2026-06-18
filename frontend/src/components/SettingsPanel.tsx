@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { M3Expand, M3ChipAnimated, M3SwitchAnimated, M3FadeIn } from './m3';
+import { saveOutputDirs } from '../lib/api';
 import type { SettingsPanelProps, Format, Resolution, Engine, CookiesBrowser } from '../types';
 
 const FORMATS: Format[] = ['mp3', 'm4a', 'flac', 'opus', 'wav', 'mp4', 'webm', 'mkv', 'best'];
@@ -31,7 +32,7 @@ const COOKIES: { value: CookiesBrowser; label: string }[] = [
 
 const AUDIO_FORMATS = new Set<Format>(['mp3', 'm4a', 'flac', 'opus', 'wav', 'aac', 'vorbis']);
 
-export default function SettingsPanel({ options, setOptions, themePref, setThemePref }: SettingsPanelProps) {
+export default function SettingsPanel({ options, setOptions, themePref, setThemePref, smartRouting, setSmartRouting }: SettingsPanelProps) {
   const [expanded, setExpanded] = useState(true);
 
   const isAudio = AUDIO_FORMATS.has(options.format);
@@ -193,7 +194,7 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
                 type="button"
               >
                 <M3SwitchAnimated on={options.embed_meta} />
-                <span style={{ position: 'relative', zIndex: 2 }}>Embed metadata</span>
+                <span className="m3-switch-label">Embed metadata</span>
               </button>
               <button
                 className="m3-switch-item"
@@ -202,7 +203,7 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
                 type="button"
               >
                 <M3SwitchAnimated on={options.embed_thumb} />
-                <span style={{ position: 'relative', zIndex: 2 }}>Embed thumbnail</span>
+                <span className="m3-switch-label">Embed thumbnail</span>
               </button>
               <button
                 className="m3-switch-item"
@@ -211,7 +212,16 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
                 type="button"
               >
                 <M3SwitchAnimated on={options.scrape_delay} />
-                <span style={{ position: 'relative', zIndex: 2 }}>Random delay</span>
+                <span className="m3-switch-label">Random delay</span>
+              </button>
+              <button
+                className="m3-switch-item"
+                onClick={() => setSmartRouting(!smartRouting)}
+                aria-pressed={smartRouting}
+                type="button"
+              >
+                <M3SwitchAnimated on={smartRouting} />
+                <span className="m3-switch-label">Smart routing</span>
               </button>
             </div>
             {options.scrape_delay && (
@@ -221,6 +231,49 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
                 </div>
               </M3FadeIn>
             )}
+            {smartRouting && (
+              <M3FadeIn delay={0.1}>
+                <div className="setting-hint">
+                  Auto-detects songs vs videos and picks the right format + folder per item
+                  (music &amp; short clips → audio, long videos → video).
+                </div>
+              </M3FadeIn>
+            )}
+          </div>
+          {/* DIRECTORIES */}
+          <div className="setting setting-full">
+            <div className="setting-label">Output directories</div>
+            <div className="flex flex-col gap-2">
+              <div className="dir-row">
+                <span className="dir-row-label">Audio</span>
+                <input
+                  id="settings-audio-dir"
+                  className="outdir-input standalone"
+                  placeholder="e.g. C:\Users\you\Music"
+                  value={options.audio_dir}
+                  onChange={(e) => update('audio_dir', e.target.value)}
+                  onBlur={() => {
+                    saveOutputDirs({ audio_dir: options.audio_dir, video_dir: options.video_dir }).catch(() => {});
+                  }}
+                />
+              </div>
+              <div className="dir-row">
+                <span className="dir-row-label">Video</span>
+                <input
+                  id="settings-video-dir"
+                  className="outdir-input standalone"
+                  placeholder="e.g. C:\Users\you\Videos"
+                  value={options.video_dir}
+                  onChange={(e) => update('video_dir', e.target.value)}
+                  onBlur={() => {
+                    saveOutputDirs({ audio_dir: options.audio_dir, video_dir: options.video_dir }).catch(() => {});
+                  }}
+                />
+              </div>
+            </div>
+            <div className="setting-hint">
+              Saved automatically on blur. Audio formats (mp3, flac, …) go to the audio folder; video formats go to video.
+            </div>
           </div>
         </div>
       </M3Expand>

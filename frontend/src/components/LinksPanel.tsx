@@ -67,7 +67,7 @@ export default function LinksPanel({ onQueue }: LinksPanelProps) {
 
         {unsupportedPlatforms.length > 0 && (
           <div className="links-unsupported-banner" role="alert">
-            <span className="md-icon" aria-hidden="true" style={{ fontSize: '1.1em', flexShrink: 0 }}>block</span>
+            <span className="md-icon links-banner-icon" aria-hidden="true">block</span>
             <span>
               <strong>{unsupportedPlatforms.join(', ')}</strong> {unsupportedPlatforms.length === 1 ? 'is' : 'are'} not supported by yt-dlp and cannot be downloaded.
               {unsupportedPlatforms.some(p => p === 'Spotify') && ' Try searching for the track name on YouTube or SoundCloud instead.'}
@@ -104,7 +104,7 @@ export default function LinksPanel({ onQueue }: LinksPanelProps) {
           {cleanedUrls.map((url, i) => (
             <div key={i} className="result-row">
               <div className="result-checkbox" aria-checked="true">
-                <span className="search-icon" style={{ fontSize: 'var(--text-sm)' }}>check</span>
+                <span className="search-icon search-icon-sm">check</span>
               </div>
               <div className="result-title">{url}</div>
               <div className="result-duration">Clean</div>

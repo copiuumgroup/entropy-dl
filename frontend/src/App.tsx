@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { connectSSE } from './lib/utils';
 import {
-
   fetchJobs,
   fetchConcurrency,
   updateConcurrency,
@@ -9,7 +8,8 @@ import {
   retryJob,
   deleteJob,
   clearJobs,
-  completeOnboarding,
+  fetchSettings,
+  setSmartRouting,
 } from './lib/api';
 import {
   M3ViewTransition,
@@ -19,7 +19,6 @@ import {
 import ErrorBoundary from './components/ErrorBoundary';
 import InfoModal from './components/InfoModal';
 import QuitButton from './components/QuitButton';
-import OutputDirBar from './components/OutputDirBar';
 import ToolsStatus from './components/ToolsStatus';
 import ThemeSync from './components/ThemeSync';
 import MeshBackground from './components/MeshBackground';
@@ -62,8 +61,9 @@ const DEFAULT_OPTIONS: JobOptions = {
   embed_thumb: true,
   engine: 'ytdlp',
   cookies_browser: 'none',
-  output_dir: '',
-  scrape_delay: false,
+  audio_dir: '',
+  video_dir: '',
+  scrape_delay: true,
   concurrency: 2,
   resolution: 'BEST',
 };
@@ -76,6 +76,7 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [toast, setToast] = useState<Toast | null>(null);
   const [options, setOptions] = useState<JobOptions>(DEFAULT_OPTIONS);
+  const [smartRouting, setSmartRoutingState] = useState(false);
   const [themePref, setThemePrefState] = useState<ThemePref>(() => {
     return (localStorage.getItem('theme_pref') as ThemePref) || 'system';
   });
@@ -86,6 +87,12 @@ export default function App() {
   const setThemePref = (pref: ThemePref) => {
     localStorage.setItem('theme_pref', pref);
     setThemePrefState(pref);
+  };
+
+  // Smart routing: persisted server-side so it survives restarts.
+  const handleSetSmartRouting = (enabled: boolean) => {
+    setSmartRoutingState(enabled);
+    setSmartRouting(enabled).catch(() => {});
   };
 
   const concurrencyReady = useRef(false);
@@ -107,18 +114,26 @@ export default function App() {
     fetchJobs().then((j) => {
       setJobs(j);
       setAppReady(true);
-    }).catch(() => {
-      setAppReady(true);
-    });
+    }).catch(() => setAppReady(true));
 
     fetchConcurrency().then((workers) => {
       setOptions((prev) => ({ ...prev, concurrency: workers }));
       concurrencyReady.current = true;
       lastConcurrency.current = workers;
     }).catch(() => {
-      // Use default concurrency
       concurrencyReady.current = true;
     });
+
+    fetchSettings().then((settings) => {
+      setOptions((prev) => ({
+        ...prev,
+        audio_dir: settings.audio_dir || prev.audio_dir,
+        video_dir: settings.video_dir || prev.video_dir,
+      }));
+      if (settings.smart_routing !== undefined) {
+        setSmartRoutingState(settings.smart_routing);
+      }
+    }).catch(() => {});
 
     sseCleanup.current = connectSSE((event: SSEEvent) => {
       if (event.type === 'snapshot') {
@@ -290,7 +305,6 @@ export default function App() {
           <header className="rail-header">
             <div className="rail-header-left">
               <span className="rail-header-title">Entropy</span>
-              <OutputDirBar onToast={showToast} />
             </div>
             <div className="rail-header-right">
               <button
@@ -383,11 +397,13 @@ export default function App() {
 
             {activeView === 'settings' && (
               <M3ViewTransition keyProp="settings">
-                <SettingsPanel 
-                  options={options} 
-                  setOptions={setOptions} 
-                  themePref={themePref} 
-                  setThemePref={setThemePref} 
+                <SettingsPanel
+                  options={options}
+                  setOptions={setOptions}
+                  themePref={themePref}
+                  setThemePref={setThemePref}
+                  smartRouting={smartRouting}
+                  setSmartRouting={handleSetSmartRouting}
                 />
               </M3ViewTransition>
             )}

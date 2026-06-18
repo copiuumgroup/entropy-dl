@@ -9,9 +9,11 @@ import (
 )
 
 type Settings struct {
-        OutputDir      string `json:"output_dir"`
+        AudioDir       string `json:"audio_dir"`
+        VideoDir       string `json:"video_dir"`
         MaxWorkers     int    `json:"max_workers"`
         BandwidthLimit string `json:"bandwidth_limit"` // global default bandwidth limit (e.g., "5M", "10M", "0" = unlimited)
+        SmartRouting   bool   `json:"smart_routing"`  // auto-detect audio vs video and route accordingly
         OnboardingDone bool   `json:"onboarding_done"`
 }
 

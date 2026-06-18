@@ -16,13 +16,19 @@ interface ThemeResponse {
 /**
  * ThemeSync fetches the OS accent color from /api/theme,
  * generates an M3 tonal palette via HCT, and applies it as CSS variables.
- * Also listens for prefers-color-scheme changes to swap light/dark.
+ * Also listens for prefers-color-scheme changes to swap light/dark, and
+ * polls the OS accent periodically so changes apply without an app restart.
  */
 import type { ThemePref } from '../types';
 
 interface ThemeSyncProps {
   themePref: ThemePref;
 }
+
+// How often to re-check the OS accent color. Windows/macOS/Linux don't
+// broadcast accent changes to the browser, so we poll. 5s is responsive
+// enough to feel live without any meaningful cost.
+const ACCENT_POLL_INTERVAL = 5000;
 
 export default function ThemeSync({ themePref }: ThemeSyncProps) {
   const schemeRef = useRef<M3Scheme | null>(null);
@@ -53,23 +59,26 @@ export default function ThemeSync({ themePref }: ThemeSyncProps) {
       return window.matchMedia('(prefers-color-scheme: dark)').matches;
     };
 
-    // Fetch system accent color only once (or rely on seedRef if already fetched)
-    if (!seedRef.current) {
+    // Fetch (or re-fetch) the OS accent color. Re-applies the scheme only
+    // when the seed actually changed, so polling is a no-op most of the time.
+    const refreshSeed = () => {
       fetch('/api/theme')
         .then((r) => r.json())
         .then((data: ThemeResponse) => {
           if (cancelled) return;
           const seed = data.seed || DEFAULT_SEEDS[data.platform] || EXPRESSIVE_DEFAULT;
-          seedRef.current = seed;
-          applyForMode(seed, determineIsDark());
+          if (seed !== seedRef.current) {
+            seedRef.current = seed;
+            applyForMode(seed, determineIsDark());
+          }
         })
-        .catch(() => {
-          if (cancelled) return;
-          applyForMode('', determineIsDark());
-        });
-    } else {
-      applyForMode(seedRef.current, determineIsDark());
-    }
+        .catch(() => { /* non-fatal; keep previous theme */ });
+    };
+
+    // Initial fetch — apply immediately so the first paint is correct.
+    refreshSeed();
+    // Poll for OS accent changes (user changes Windows color, etc.)
+    const pollId = window.setInterval(refreshSeed, ACCENT_POLL_INTERVAL);
 
     // Listen for system dark/light mode changes (only matters if system)
     const mql = window.matchMedia('(prefers-color-scheme: dark)');
@@ -82,6 +91,7 @@ export default function ThemeSync({ themePref }: ThemeSyncProps) {
 
     return () => {
       cancelled = true;
+      window.clearInterval(pollId);
       mql.removeEventListener('change', handler);
     };
   }, [applyForMode, themePref]);

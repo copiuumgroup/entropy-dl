@@ -1,23 +1,23 @@
 package main
 
 import (
-        "context"
-        "encoding/json"
-        "fmt"
-        "io"
-        "io/fs"
-        "log"
-        "net/http"
-        "os"
-        "os/exec"
-        "os/signal"
-        "path/filepath"
-        "runtime"
-        "strconv"
-        "strings"
-        "sync"
-        "syscall"
-        "time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
 
         "entropy-gui/pkg/cleaner"
         "entropy-gui/pkg/cmdutil"
@@ -29,8 +29,11 @@ import (
         "entropy-gui/pkg/themereader"
         "entropy-gui/pkg/ytdlp"
 
-        "github.com/google/uuid"
+	"github.com/google/uuid"
 )
+
+// version is set at build time via -ldflags "-X main.version=dev"
+var version = "dev"
 
 // maxBodyBytes limits JSON request body size to prevent OOM attacks.
 const maxBodyBytes = 1 << 20 // 1 MB
@@ -101,35 +104,44 @@ func main() {
         }
 
         // Persisted settings override env defaults if present.
-        outputDir := defaultOutputDir
-        if settings.OutputDir != "" {
-                outputDir = settings.OutputDir
+        audioDir := filepath.Join(defaultOutputDir, "Entropy Music")
+        videoDir := filepath.Join(defaultOutputDir, "Entropy Videos")
+        if home, err := os.UserHomeDir(); err == nil {
+                audioDir = filepath.Join(home, "Music", "Entropy")
+                videoDir = filepath.Join(home, "Videos", "Entropy")
+        }
+
+        if settings.AudioDir != "" {
+                audioDir = settings.AudioDir
+        }
+        if settings.VideoDir != "" {
+                videoDir = settings.VideoDir
         }
         if settings.MaxWorkers > 0 {
                 workers = settings.MaxWorkers
         }
 
-        // Try creating outputDir. If we get a permission denied error, log warning and fallback to defaultOutputDir.
-        if err := os.MkdirAll(outputDir, 0o755); err != nil {
-                log.Printf("warning: output directory %q is not writable (%v). Falling back to default output directory.", outputDir, err)
-                outputDir = defaultOutputDir
-                // If defaultOutputDir is also not writable, try to use user's home downloads or current directory
-                if err := os.MkdirAll(outputDir, 0o755); err != nil {
-                        log.Printf("warning: default output directory %q is also not writable (%v). Falling back to user home downloads or local directory.", outputDir, err)
-                        if home, err := os.UserHomeDir(); err == nil {
-                                outputDir = filepath.Join(home, "Downloads")
-                        } else {
-                                outputDir = "downloads"
-                        }
-                        _ = os.MkdirAll(outputDir, 0o755)
+        ensureWritable := func(dir string) string {
+                if err := os.MkdirAll(dir, 0o755); err != nil {
+                        log.Printf("warning: output dir %q not writable, falling back to local downloads", dir)
+                        d := filepath.Join("downloads", filepath.Base(dir))
+                        _ = os.MkdirAll(d, 0o755)
+                        return d
                 }
+                return dir
         }
+        audioDir = ensureWritable(audioDir)
+        videoDir = ensureWritable(videoDir)
 
-        mgr := jobs.NewManager(ytdlpBin, aria2cBin, ffmpegBin, outputDir, workers)
+        mgr := jobs.NewManager(ytdlpBin, aria2cBin, ffmpegBin, audioDir, videoDir, workers)
 
         // Restore persisted bandwidth limit if set
         if settings.BandwidthLimit != "" {
                 mgr.SetBandwidth(settings.BandwidthLimit)
+        }
+        // Restore smart routing preference
+        if settings.SmartRouting {
+                mgr.SetSmartRouting(true)
         }
 
         // Restore jobs from previous run
@@ -179,6 +191,7 @@ func main() {
         mux.HandleFunc("/api/tools/update", srv.handleToolUpdate)
         mux.HandleFunc("/api/concurrency", srv.handleConcurrency)
         mux.HandleFunc("/api/bandwidth", srv.handleBandwidth)
+        mux.HandleFunc("/api/smart-routing", srv.handleSmartRouting)
         mux.HandleFunc("/api/shutdown", srv.handleShutdown)
         mux.HandleFunc("/api/jobs/retry-failed", srv.handleRetryFailed)
         mux.HandleFunc("/api/stats", srv.handleStats)
@@ -205,7 +218,7 @@ func main() {
                         }
                         w.Header().Set("Content-Type", "text/html")
                         fmt.Fprintf(w, `<!doctype html><html><body style="background:#000;color:#fff;font-family:monospace;padding:40px">
-<h1>ENTROPY // MEDIA LIFT</h1>
+<h1>ENTROPY DL</h1>
 <p>Backend running on port %s. Frontend build not found.</p>
 <p>API: <a style="color:#4ade80" href="/api/health">/api/health</a></p>
 </body></html>`, port)
@@ -227,8 +240,8 @@ func main() {
 
         // Bind to loopback only — not reachable from LAN or internet.
         addr := "127.0.0.1:" + port
-        log.Printf("entropy-gui backend listening on http://%s | output=%s | workers=%d | state=%s | restored=%d",
-                addr, outputDir, workers, statePath, len(restored))
+        log.Printf("entropy-gui backend listening on http://%s | audio=%s | video=%s | workers=%d | state=%s | restored=%d",
+                addr, audioDir, videoDir, workers, statePath, len(restored))
 
         server := &http.Server{Addr: addr, Handler: handler}
 
@@ -267,7 +280,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
         writeJSON(w, http.StatusOK, map[string]any{
-                "output_dir":  s.mgr.Output(),
+                "audio_dir":  s.mgr.AudioDir(),
+                "video_dir":  s.mgr.VideoDir(),
                 "formats":     []string{"mp3", "m4a", "flac", "opus", "wav", "mp4", "webm", "mkv", "best"},
                 "bitrates":    []string{"96", "128", "192", "256", "320"},
                 "resolutions": []string{"BEST", "4K", "1440p", "1080p", "720p", "480p"},
@@ -284,57 +298,73 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case http.MethodGet:
                 writeJSON(w, http.StatusOK, map[string]any{
-                        "output_dir":      s.mgr.Output(),
+                        "audio_dir":      s.mgr.AudioDir(),
+                        "video_dir":      s.mgr.VideoDir(),
                         "bandwidth_limit": s.mgr.Bandwidth(),
+                        "smart_routing":  s.mgr.SmartRouting(),
                 })
         case http.MethodPost:
                 var req struct {
-                        OutputDir string `json:"output_dir"`
+                        AudioDir string `json:"audio_dir"`
+                        VideoDir string `json:"video_dir"`
                 }
                 r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes) // FIX #2
                 if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
                         http.Error(w, "invalid body", http.StatusBadRequest)
                         return
                 }
-                req.OutputDir = strings.TrimSpace(req.OutputDir)
-                if req.OutputDir == "" {
-                        writeJSON(w, http.StatusBadRequest, map[string]any{"error": "output_dir required"})
+                req.AudioDir = strings.TrimSpace(req.AudioDir)
+                req.VideoDir = strings.TrimSpace(req.VideoDir)
+                if req.AudioDir == "" || req.VideoDir == "" {
+                        writeJSON(w, http.StatusBadRequest, map[string]any{"error": "audio_dir and video_dir required"})
                         return
                 }
-                // Expand ~ and resolve absolute path.
-                if strings.HasPrefix(req.OutputDir, "~") {
-                        if home, err := os.UserHomeDir(); err == nil {
-                                req.OutputDir = filepath.Join(home, strings.TrimPrefix(req.OutputDir, "~"))
+                
+                checkDir := func(dir string) (string, error) {
+                        if strings.HasPrefix(dir, "~") {
+                                if home, err := os.UserHomeDir(); err == nil {
+                                        dir = filepath.Join(home, strings.TrimPrefix(dir, "~"))
+                                }
                         }
+                        abs, err := filepath.Abs(dir)
+                        if err != nil {
+                                return "", err
+                        }
+                        if isProtectedPath(abs) {
+                                return "", fmt.Errorf("path %q is a protected system path", abs)
+                        }
+                        if err := os.MkdirAll(abs, 0o755); err != nil {
+                                return "", fmt.Errorf("cannot create dir: %v", err)
+                        }
+                        probe := filepath.Join(abs, ".entropy-write-probe")
+                        if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
+                                return "", fmt.Errorf("directory not writable")
+                        }
+                        _ = os.Remove(probe)
+                        return abs, nil
                 }
-                abs, err := filepath.Abs(req.OutputDir)
+
+                absAudio, err := checkDir(req.AudioDir)
                 if err != nil {
                         writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
                         return
                 }
-                // Path traversal protection: reject obviously dangerous system paths.
-                if isProtectedPath(abs) {
-                        writeJSON(w, http.StatusForbidden, map[string]any{"error": "output_dir points to a protected system path"})
+                absVideo, err := checkDir(req.VideoDir)
+                if err != nil {
+                        writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
                         return
                 }
-                if err := os.MkdirAll(abs, 0o755); err != nil {
-                        writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cannot create dir: " + err.Error()})
-                        return
-                }
-                // Check writable.
-                probe := filepath.Join(abs, ".entropy-write-probe")
-                if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
-                        writeJSON(w, http.StatusBadRequest, map[string]any{"error": "directory not writable"})
-                        return
-                }
-                _ = os.Remove(probe)
-                s.mgr.SetOutput(abs)
+
+                s.mgr.SetAudioDir(absAudio)
+                s.mgr.SetVideoDir(absVideo)
                 _ = s.store.SaveSettings(store.Settings{
-                        OutputDir:      abs,
+                        AudioDir:       absAudio,
+                        VideoDir:       absVideo,
                         MaxWorkers:     s.mgr.Workers(),
                         BandwidthLimit: s.mgr.Bandwidth(),
+                        SmartRouting:   s.mgr.SmartRouting(),
                 })
-                writeJSON(w, http.StatusOK, map[string]any{"output_dir": abs})
+                writeJSON(w, http.StatusOK, map[string]any{"audio_dir": absAudio, "video_dir": absVideo})
         default:
                 http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
         }
@@ -436,16 +466,28 @@ func (s *Server) createJobs(w http.ResponseWriter, r *http.Request) {
         if len(req.Items) > 0 {
                 created = append(created, s.mgr.AddDirect(req.Items, req.Options)...)
         }
-        if len(req.URLs) > 0 {
-                ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-                defer cancel()
-                more, err := s.mgr.AddURLs(ctx, req.URLs, req.Options)
-                if err != nil {
-                        writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
-                        return
-                }
-                created = append(created, more...)
-        }
+	if len(req.URLs) > 0 {
+		// Budget enough time to probe every URL. Each playlist/album probe
+		// can take a while on slowly-paginating sources (e.g. a 65-track
+		// SoundCloud set), so we scale the deadline with the batch size:
+		// ~120s per URL, clamped to a sane window. A single fixed 60s cap
+		// previously starved multi-playlist batches and truncated results.
+		timeout := time.Duration(len(req.URLs)*120) * time.Second
+		if timeout < 60*time.Second {
+			timeout = 60 * time.Second
+		}
+		if timeout > 600*time.Second {
+			timeout = 600 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		more, err := s.mgr.AddURLs(ctx, req.URLs, req.Options)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+			return
+		}
+		created = append(created, more...)
+	}
         if len(created) == 0 {
                 writeJSON(w, http.StatusBadRequest, map[string]any{"error": "no valid urls/items"})
                 return
@@ -615,7 +657,7 @@ func (s *Server) handleEnv(w http.ResponseWriter, r *http.Request) {
         settings, _ := s.store.LoadSettings()
 
         // Disk space info for the env endpoint
-        freeDiskGB, _ := diskguard.FreeSpaceGB(s.mgr.Output())
+        freeDiskGB, _ := diskguard.FreeSpaceGB(s.mgr.VideoDir())
 
         writeJSON(w, http.StatusOK, map[string]any{
                 "platform":        runtime.GOOS,
@@ -708,9 +750,11 @@ func (s *Server) handleConcurrency(w http.ResponseWriter, r *http.Request) {
         }
         s.mgr.SetWorkers(req.Workers)
         _ = s.store.SaveSettings(store.Settings{
-                OutputDir:      s.mgr.Output(),
+                AudioDir:       s.mgr.AudioDir(),
+                VideoDir:       s.mgr.VideoDir(),
                 MaxWorkers:     req.Workers,
                 BandwidthLimit: s.mgr.Bandwidth(),
+                SmartRouting:   s.mgr.SmartRouting(),
         })
         writeJSON(w, http.StatusOK, map[string]any{"workers": req.Workers})
 }
@@ -747,11 +791,37 @@ func (s *Server) handleBandwidth(w http.ResponseWriter, r *http.Request) {
         }
         s.mgr.SetBandwidth(req.Limit)
         _ = s.store.SaveSettings(store.Settings{
-                OutputDir:      s.mgr.Output(),
+                AudioDir:       s.mgr.AudioDir(),
+                VideoDir:       s.mgr.VideoDir(),
                 MaxWorkers:     s.mgr.Workers(),
                 BandwidthLimit: req.Limit,
+                SmartRouting:   s.mgr.SmartRouting(),
         })
         writeJSON(w, http.StatusOK, map[string]any{"bandwidth_limit": req.Limit})
+}
+
+// POST /api/smart-routing
+func (s *Server) handleSmartRouting(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+                http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+                return
+        }
+        var req struct {
+                Enabled bool `json:"enabled"`
+        }
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "invalid body", http.StatusBadRequest)
+                return
+        }
+        s.mgr.SetSmartRouting(req.Enabled)
+        _ = s.store.SaveSettings(store.Settings{
+                AudioDir:       s.mgr.AudioDir(),
+                VideoDir:       s.mgr.VideoDir(),
+                MaxWorkers:     s.mgr.Workers(),
+                BandwidthLimit: s.mgr.Bandwidth(),
+                SmartRouting:   req.Enabled,
+        })
+        writeJSON(w, http.StatusOK, map[string]any{"smart_routing": req.Enabled})
 }
 
 // isValidBandwidth checks if a bandwidth limit string is valid for yt-dlp --limit-rate.
@@ -880,7 +950,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
         }
         stats := s.mgr.Stats()
         // Enrich with disk space info
-        freeGB, err := diskguard.FreeSpaceGB(s.mgr.Output())
+        freeGB, err := diskguard.FreeSpaceGB(s.mgr.VideoDir())
         if err == nil {
                 stats.FreeDiskGB = freeGB
         }

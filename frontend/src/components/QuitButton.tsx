@@ -16,7 +16,7 @@ export default function QuitButton(_props: QuitButtonProps) {
         <div style="background:var(--md-background);color:var(--md-on-surface);font-family:var(--font-mono);display:grid;place-items:center;height:100vh;text-align:center">
           <div>
             <div style="font-size:var(--md-sys-typescale-size-2xl);letter-spacing:0.35em;margin-bottom:var(--sp-4)">SHUTDOWN COMPLETE</div>
-            <div style="font-size:var(--text-xs);color:var(--md-outline);letter-spacing:0.2em">ENTROPY // MEDIA LIFT</div>
+            <div style="font-size:var(--text-xs);color:var(--md-outline);letter-spacing:0.2em">ENTROPY DL</div>
           </div>
         </div>`;
       window.close();

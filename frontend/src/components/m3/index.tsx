@@ -510,7 +510,9 @@ export const M3SwitchAnimated: React.FC<M3SwitchAnimatedProps> = ({ on }) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
-//  M3NavRailIndicator — Animated circle for nav rail (CSS transition)
+//  M3NavRailIndicator — Animated pill for nav rail (CSS transition)
+//  Renders as a full-height pill behind the entire active item
+//  (icon + label together), matching the M3 navigation rail spec.
 // ═══════════════════════════════════════════════════════════════════════
 
 export interface M3NavRailIndicatorProps {
@@ -525,27 +527,27 @@ export const M3NavRailIndicator: React.FC<M3NavRailIndicatorProps> = ({
   activeIndex,
   itemHeight = 56,
   gap = 4,
-  paddingTop = 16,
+  paddingTop = 0,
 }) => {
-  const indicatorSize = 40;
+  // Pill spans the full item height so icon + label read as one unit.
+  const pillHeight = itemHeight;
   const y = paddingTop + activeIndex * (itemHeight + gap);
-  const yOffset = y + (itemHeight / 2) - (indicatorSize / 2) - 6;
 
   return (
     <motion.span
       className="nav-rail-indicator"
       aria-hidden="true"
       initial={false}
-      animate={{ y: yOffset }}
+      animate={{ y }}
       transition={springConfig}
       style={{
         position: 'absolute',
         left: '50%',
         x: '-50%',
-        top: 0, // Using layout animation y instead of top
-        width: indicatorSize,
-        height: indicatorSize,
-        borderRadius: '50%',
+        top: 0,
+        width: '3.5rem',
+        height: pillHeight,
+        borderRadius: 'var(--md-shape-xl, 16px)',
         background: 'var(--md-secondary-container, #4A4458)',
         zIndex: 0,
         pointerEvents: 'none',

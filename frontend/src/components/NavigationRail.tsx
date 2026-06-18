@@ -1,5 +1,6 @@
 import { M3NavRailIndicator } from './m3';
 import { Ripple } from './Ripple';
+import BrandMarkIcon from './BrandMarkIcon';
 
 type ViewId = 'search' | 'queue' | 'settings' | 'log';
 
@@ -21,8 +22,10 @@ export default function NavigationRail({ active, onChange, queueCount }: Navigat
 
   return (
     <nav className="nav-rail" aria-label="Main navigation">
-      <div className="nav-rail-brand" title="ENTROPY // MEDIA LIFT v0.9">
-        <div className="brand-mark">E</div>
+      <div className="nav-rail-brand" title="Entropy DL">
+        <div className="brand-mark">
+          <BrandMarkIcon />
+        </div>
       </div>
 
       <div className="nav-rail-destinations">
