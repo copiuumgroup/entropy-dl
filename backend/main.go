@@ -19,15 +19,17 @@ import (
 	"syscall"
 	"time"
 
-        "entropy-gui/pkg/cleaner"
-        "entropy-gui/pkg/cmdutil"
-        "entropy-gui/pkg/diskguard"
-        "entropy-gui/pkg/importer"
-        "entropy-gui/pkg/jobs"
-        "entropy-gui/pkg/ratelimit"
-        "entropy-gui/pkg/store"
-        "entropy-gui/pkg/themereader"
-        "entropy-gui/pkg/ytdlp"
+	"entropy-gui/pkg/auth"
+	"entropy-gui/pkg/cleaner"
+	"entropy-gui/pkg/cmdutil"
+	"entropy-gui/pkg/diskguard"
+	"entropy-gui/pkg/importer"
+	"entropy-gui/pkg/jobs"
+	"entropy-gui/pkg/library"
+	"entropy-gui/pkg/ratelimit"
+	"entropy-gui/pkg/store"
+	"entropy-gui/pkg/themereader"
+	"entropy-gui/pkg/ytdlp"
 
 	"github.com/google/uuid"
 )
@@ -46,21 +48,32 @@ const maxURLsPerRequest = 500
 const sessionCookieName = "entropy_session"
 
 type Server struct {
-        mgr             *jobs.Manager
-        ytdlpBin        string
-        store           *store.Store
-        shutdownToken   string // CSRF token; set as HttpOnly cookie
-        secureCookie    bool   // true if server runs over HTTPS
-        lastToolUpdate  time.Time // rate-limit tool updates
-        toolUpdateMu    sync.Mutex
+	mgr             *jobs.Manager
+	ytdlpBin        string
+	store           *store.Store
+	authStore       *auth.Store
+	shutdownToken   string // CSRF token; set as HttpOnly cookie
+	secureCookie    bool   // true if server runs over HTTPS
+	lastToolUpdate  time.Time // rate-limit tool updates
+	toolUpdateMu    sync.Mutex
+	loopbackMode    bool   // true when serving on loopback (no auth needed)
 }
 
 func main() {
         loadEnvFile("/app/backend/.env")
         loadEnvFile(".env") // also try .env beside the binary (for portable builds)
 
-        port := getenv("PORT", "8001")
-        ytdlpBin := resolveTool("YTDLP_BIN", "yt-dlp")
+	port := getenv("PORT", "8001")
+	host := resolveBindHost()
+	if err := validateBindConfig(host); err != nil {
+		log.Fatalf("[entropy] unsafe bind configuration: %v", err)
+	}
+	tlsOn := useHTTPS() && !isLoopbackHost(host)
+	scheme := "http"
+	if tlsOn {
+		scheme = "https"
+	}
+	ytdlpBin := resolveTool("YTDLP_BIN", "yt-dlp")
         aria2cBin := resolveTool("ARIA2C_BIN", "aria2c")
         ffmpegBin := resolveTool("FFMPEG_BIN", "ffmpeg")
         defaultOutputDir := getenv("DOWNLOAD_DIR", defaultDownloadDir())
@@ -167,13 +180,53 @@ func main() {
         }
         mgr.AttachPersistence(saveJob, deleteJob, restored)
 
+        // --- Auth setup ---
+        // Auth is only active when serving over a non-loopback address (the
+        // homelab/network case). When loopback, the loopback-passthrough flag
+        // makes every handler behave as if a single admin is already authenticated.
+        loopbackMode := isLoopbackHost(host)
+
+        var authStore *auth.Store
+        if loopbackMode {
+                log.Println("[entropy] loopback mode — auth disabled, full access granted")
+        } else {
+                as, err := auth.New(st.DB())
+                if err != nil {
+                        log.Fatalf("auth: %v", err)
+                }
+                authStore = as
+
+                // Bootstrap: if ADMIN_PASSWORD is set and no admin user exists yet,
+                // create the first admin. This is the smoothest onboarding path:
+                // the homelab operator sets HOST + USE_HTTPS + ADMIN_PASSWORD in .env
+                // and the first start "just works".
+                if pw := strings.TrimSpace(os.Getenv(adminPasswordEnv)); pw != "" {
+                        hasAdmin, _ := as.HasAdmin()
+                        if !hasAdmin {
+                                if _, err := as.Create("admin", pw, true); err != nil {
+                                        log.Fatalf("auth: bootstrap admin user: %v", err)
+                                }
+                                log.Println("[entropy] auth: created initial admin user from ADMIN_PASSWORD env")
+                        }
+                }
+
+                hasAny, _ := as.HasAnyUser()
+                if !hasAny {
+                        log.Println("[entropy] auth: no users configured — setup mode active. POST /api/setup to create the first admin.")
+                }
+        }
+
         // FIX #1: generate a unique session token for CSRF protection on shutdown.
         // This token is set as an HttpOnly cookie; SameSite=Lax prevents
         // cross-origin requests from including it.
         shutdownToken := uuid.NewString()
-        secureCookie := getenv("USE_HTTPS", "0") == "1"
+        // Mark session cookies Secure only when we're actually serving over
+        // TLS. tlsOn already encodes "non-loopback + USE_HTTPS=1", which is the
+        // one configuration where a Secure cookie survives (browsers drop
+        // Secure cookies on plain-HTTP responses).
+        secureCookie := tlsOn
 
-        srv := &Server{mgr: mgr, ytdlpBin: ytdlpBin, store: st, shutdownToken: shutdownToken, secureCookie: secureCookie}
+        srv := &Server{mgr: mgr, ytdlpBin: ytdlpBin, store: st, authStore: authStore, shutdownToken: shutdownToken, secureCookie: secureCookie, loopbackMode: loopbackMode}
 
         mux := http.NewServeMux()
         mux.HandleFunc("/api/health", srv.handleHealth)
@@ -195,8 +248,20 @@ func main() {
         mux.HandleFunc("/api/shutdown", srv.handleShutdown)
         mux.HandleFunc("/api/jobs/retry-failed", srv.handleRetryFailed)
         mux.HandleFunc("/api/stats", srv.handleStats)
-        mux.HandleFunc("/api/import", srv.handleImport)
-        mux.HandleFunc("/api/theme", srv.handleTheme)
+	mux.HandleFunc("/api/import", srv.handleImport)
+	mux.HandleFunc("/api/theme", srv.handleTheme)
+
+	// Library — browse and stream downloaded files.
+	mux.HandleFunc("/api/library", srv.handleLibrary)
+	mux.HandleFunc("/api/library/dir", srv.handleLibraryDir)
+	mux.HandleFunc("/api/library/file", srv.handleLibraryFile)
+
+        // Auth endpoints — always reachable (no auth middleware on these).
+        mux.HandleFunc("/api/setup", srv.handleSetup)
+        mux.HandleFunc("/api/login", srv.handleLogin)
+        mux.HandleFunc("/api/logout", srv.handleLogout)
+        mux.HandleFunc("/api/me", srv.handleMe)
+        mux.HandleFunc("/api/users", srv.handleUsers)
 
         // Serve the React frontend. Priority:
         //   1. ./web/ folder beside the binary  (build-time-portable bundle)
@@ -226,29 +291,53 @@ func main() {
         }
 
         rateLimiter := ratelimit.New(30, 60) // 30 req/sec, burst 60
-        handler := withSessionCookie(srv, withSecurityHeaders(withCORS(port, withLogging(withRateLimit(mux, rateLimiter)))))
+
+        // Build the middleware chain. Auth sits between rate-limiting and the
+        // existing security headers. On loopback, auth is a no-op passthrough.
+        // On network mode, it enforces sessions and admin-only on power ops.
+        var handler http.Handler = mux
+        if !loopbackMode && authStore != nil {
+                handler = withAuthAndAdminRoles(authStore, sessionCookieName, handler)
+        }
+        handler = withSessionCookie(srv, withSecurityHeaders(withCORS(port, scheme, withLogging(withRateLimit(handler, rateLimiter)))))
 
         // Auto-launch the app window in a Chromium app-mode window.
-        if getenv("ENTROPY_NO_LAUNCH", "") == "" {
-                go launchAppWindow("http://127.0.0.1:" + port)
-        }
+        // Only meaningful for the local desktop experience: if the server is
+        // bound to a non-loopback address it's almost certainly running
+        // headless on a homelab box, where opening a local browser window is
+        // both useless and surprising. ENTROPY_NO_LAUNCH overrides either way.
+	if getenv("ENTROPY_NO_LAUNCH", "") == "" && isLoopbackHost(host) {
+		go launchAppWindow(scheme + "://" + host + ":" + port)
+	}
 
         // FIX #5: graceful shutdown via SIGINT/SIGTERM or UI quit button
         ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
         cancelSignal = stop // allow exit.go to unblock main via triggerGracefulShutdown
         defer stop()
 
-        // Bind to loopback only — not reachable from LAN or internet.
-        addr := "127.0.0.1:" + port
-        log.Printf("entropy-gui backend listening on http://%s | audio=%s | video=%s | workers=%d | state=%s | restored=%d",
-                addr, audioDir, videoDir, workers, statePath, len(restored))
+        // Bind address. Loopback (default) keeps the app unreachable from the
+        // LAN/internet. A non-loopback HOST is permitted only because the
+        // startup guard (validateBindConfig) already verified TLS+auth are on.
+        addr := host + ":" + port
+        log.Printf("entropy-gui backend listening on %s://%s | audio=%s | video=%s | workers=%d | state=%s | restored=%d",
+                scheme, addr, audioDir, videoDir, workers, statePath, len(restored))
 
         server := &http.Server{Addr: addr, Handler: handler}
 
         // Listen in a goroutine so we can handle shutdown signals
         go func() {
-                if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-                        log.Fatalf("listen: %v", err)
+                if tlsOn {
+                        certFile, keyFile, err := ensureCerts()
+                        if err != nil {
+                                log.Fatalf("[entropy] %v", err)
+                        }
+                        if err := server.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
+                                log.Fatalf("listen: %v", err)
+                        }
+                } else {
+                        if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+                                log.Fatalf("listen: %v", err)
+                        }
                 }
         }()
 
@@ -435,7 +524,7 @@ func (s *Server) handleCleanURL(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case http.MethodGet:
-                writeJSON(w, http.StatusOK, map[string]any{"jobs": s.mgr.List()})
+                writeJSON(w, http.StatusOK, map[string]any{"jobs": s.mgr.List(requestOwner(s, r))})
         case http.MethodPost:
                 s.createJobs(w, r)
         default:
@@ -444,6 +533,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createJobs(w http.ResponseWriter, r *http.Request) {
+        owner := requestOwner(s, r)
         var req struct {
                 URLs    []string          `json:"urls"`
                 Text    string            `json:"text"`
@@ -464,7 +554,7 @@ func (s *Server) createJobs(w http.ResponseWriter, r *http.Request) {
         }
         var created []*jobs.Job
         if len(req.Items) > 0 {
-                created = append(created, s.mgr.AddDirect(req.Items, req.Options)...)
+                created = append(created, s.mgr.AddDirect(req.Items, req.Options, owner)...)
         }
 	if len(req.URLs) > 0 {
 		// Budget enough time to probe every URL. Each playlist/album probe
@@ -481,7 +571,7 @@ func (s *Server) createJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
-		more, err := s.mgr.AddURLs(ctx, req.URLs, req.Options)
+		more, err := s.mgr.AddURLs(ctx, req.URLs, req.Options, owner)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 			return
@@ -518,6 +608,7 @@ func openInFileBrowser(filePath string) error {
 }
 
 func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
+        owner := requestOwner(s, r)
         // Path: /api/jobs/<id> or /api/jobs/<id>/retry or /api/jobs/<id>/open-folder
         path := strings.TrimPrefix(r.URL.Path, "/api/jobs/")
         if path == "" || path == "clear" || path == "stream" {
@@ -533,7 +624,7 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
                                 http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
                                 return
                         }
-                        if s.mgr.Retry(id) {
+                        if s.mgr.Retry(id, owner) {
                                 writeJSON(w, http.StatusOK, map[string]any{"ok": true})
                                 return
                         }
@@ -544,7 +635,7 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
                                 http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
                                 return
                         }
-                        job, ok := s.mgr.Get(id)
+                        job, ok := s.mgr.Get(id, owner)
                         if !ok || job.OutputFile == "" {
                                 http.Error(w, "job not found or no output file", http.StatusNotFound)
                                 return
@@ -558,7 +649,7 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
                 }
         }
         if r.Method == http.MethodDelete {
-                if s.mgr.Remove(id) {
+                if s.mgr.Remove(id, owner) {
                         writeJSON(w, http.StatusOK, map[string]any{"ok": true})
                         return
                 }
@@ -582,7 +673,7 @@ func (s *Server) handleJobsClear(w http.ResponseWriter, r *http.Request) {
                 writeJSON(w, http.StatusBadRequest, map[string]any{"error": "what must be 'completed' or 'failed'"})
                 return
         }
-        removed := s.mgr.Clear(req.What)
+        removed := s.mgr.Clear(req.What, requestOwner(s, r))
         writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
@@ -597,7 +688,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
         if limit > 2000 {
                 limit = 2000
         }
-        writeJSON(w, http.StatusOK, map[string]any{"logs": s.mgr.RecentLogs(limit)})
+        writeJSON(w, http.StatusOK, map[string]any{"logs": s.mgr.RecentLogs(limit, requestOwner(s, r))})
 }
 
 // handleEnv probes the system environment, returns OS, distro, browsers, pkg managers
@@ -908,13 +999,15 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
         deduped, dupesInFile := importer.Deduplicate(result.URLs)
         result.URLs = deduped
 
+        owner := requestOwner(s, r)
+
         // Count how many are already done (dedup against existing jobs)
-        alreadyDone := s.mgr.DuplicateCount(result.URLs)
+        alreadyDone := s.mgr.DuplicateCount(result.URLs, owner)
 
         // Filter out already-done URLs from the result
         var freshURLs []string
         for _, u := range result.URLs {
-                if !s.mgr.IsDuplicateURL(u) {
+                if !s.mgr.IsDuplicateURL(u, owner) {
                         freshURLs = append(freshURLs, u)
                 }
         }
@@ -937,7 +1030,7 @@ func (s *Server) handleRetryFailed(w http.ResponseWriter, r *http.Request) {
                 http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
                 return
         }
-        retried := s.mgr.RetryAllFailed()
+	retried := s.mgr.RetryAllFailed(requestOwner(s, r))
         writeJSON(w, http.StatusOK, map[string]any{"retried": retried})
 }
 
@@ -948,7 +1041,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
                 http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
                 return
         }
-        stats := s.mgr.Stats()
+	stats := s.mgr.Stats(requestOwner(s, r))
         // Enrich with disk space info
         freeGB, err := diskguard.FreeSpaceGB(s.mgr.VideoDir())
         if err == nil {
@@ -960,17 +1053,388 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 // handleTheme returns the OS accent/highlight color as JSON.
 // GET /api/theme → {"seed":"#RRGGBB","platform":"linux","source":"gsettings"}
 func (s *Server) handleTheme(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	seed := themereader.GetSystemAccentColor()
+	source := themereader.GetSystemAccentSource()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"seed":     seed,
+		"platform": runtime.GOOS,
+		"source":   source,
+	})
+}
+
+// --- Library endpoints ---
+
+// allowedMediaExts is the set of file extensions the library will serve.
+// Anything else is rejected by handleLibraryFile to prevent serving
+// arbitrary files (e.g. the dead_links.csv or a stray .exe).
+var allowedMediaExts = map[string]bool{
+	// audio
+	"mp3": true, "m4a": true, "flac": true, "wav": true, "opus": true,
+	"aac": true, "ogg": true,
+	// video
+	"mp4": true, "mkv": true, "webm": true, "avi": true, "mov": true, "flv": true,
+	// images (embedded thumbnails, cover art)
+	"jpg": true, "jpeg": true, "png": true, "webp": true, "gif": true,
+}
+
+// rootDirFor maps the "root" query param ("audio"|"video") to the configured
+// output directory. Returns "" and false if the root is invalid.
+func (s *Server) rootDirFor(root string) (string, bool) {
+	switch strings.ToLower(root) {
+	case "audio":
+		return s.mgr.AudioDir(), true
+	case "video":
+		return s.mgr.VideoDir(), true
+	}
+	return "", false
+}
+
+// handleLibrary lists the top-level contents of both the audio and video dirs.
+// GET /api/library → {"audio": [...], "video": [...]}
+func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	audioEntries, audioErr := library.ListDir(s.mgr.AudioDir(), "")
+	videoEntries, videoErr := library.ListDir(s.mgr.VideoDir(), "")
+
+	// If a root directory is missing/unreadable, return an empty list rather
+	// than failing the whole request — one good root is still useful.
+	resp := map[string]any{
+		"audio":       audioEntries,
+		"video":       videoEntries,
+		"audio_error": errString(audioErr),
+		"video_error": errString(videoErr),
+	}
+	if audioEntries == nil {
+		resp["audio"] = []library.Entry{}
+	}
+	if videoEntries == nil {
+		resp["video"] = []library.Entry{}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleLibraryDir lists the contents of a subdirectory within one root.
+// GET /api/library/dir?root=audio&path=Albums → {"entries": [...]}
+func (s *Server) handleLibraryDir(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	root := r.URL.Query().Get("root")
+	relPath := r.URL.Query().Get("path")
+
+	rootDir, ok := s.rootDirFor(root)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid root (must be 'audio' or 'video')"})
+		return
+	}
+
+	entries, err := library.ListDir(rootDir, relPath)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
+}
+
+// handleLibraryFile serves a single media file with HTTP Range support.
+// GET /api/library/file?root=audio&path=song.mp3
+//
+// Streaming uses http.ServeFile which handles Range requests (206 Partial
+// Content) natively — clients can seek and the browser video player works.
+func (s *Server) handleLibraryFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	root := r.URL.Query().Get("root")
+	relPath := r.URL.Query().Get("path")
+
+	rootDir, ok := s.rootDirFor(root)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid root (must be 'audio' or 'video')"})
+		return
+	}
+	if relPath == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing path parameter"})
+		return
+	}
+
+	// Reject file extensions we don't serve, even if ResolveFile would accept them.
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(relPath), "."))
+	if !allowedMediaExts[ext] {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "file type not allowed"})
+		return
+	}
+
+	absPath, err := library.ResolveFile(rootDir, relPath)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+
+	// Inline disposition so browsers play media inline rather than downloading.
+	w.Header().Set("Content-Disposition", `inline; filename="`+filepath.Base(absPath)+`"`)
+	http.ServeFile(w, r, absPath)
+}
+
+// errString returns the error's message, or "" if nil. Used to surface
+// directory-listing errors in the library overview without failing the request.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+
+// --- auth handlers ---
+
+// handleSetup creates the first admin user. Only works when no users exist yet
+// (setup mode). After this, /api/login must be used.
+// POST /api/setup {"username": "...", "password": "..."}
+func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+                http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+                return
+        }
+        if s.loopbackMode {
+                http.Error(w, "setup not needed in loopback mode", http.StatusBadRequest)
+                return
+        }
+        hasAny, _ := s.authStore.HasAnyUser()
+        if hasAny {
+                writeJSON(w, http.StatusConflict, map[string]any{"error": "setup already completed — use /api/login"})
+                return
+        }
+        var req struct {
+                Username string `json:"username"`
+                Password string `json:"password"`
+        }
+        r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "invalid body", http.StatusBadRequest)
+                return
+        }
+        req.Username = strings.TrimSpace(req.Username)
+        req.Password = strings.TrimSpace(req.Password)
+        if req.Username == "" || len(req.Username) > 64 {
+                writeJSON(w, http.StatusBadRequest, map[string]any{"error": "username must be 1-64 characters"})
+                return
+        }
+        user, err := s.authStore.Create(req.Username, req.Password, true)
+        if err != nil {
+                writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+                return
+        }
+        // Auto-login: create a session and set the cookie so the frontend
+        // can immediately start using the API without a separate /login call.
+        token := s.authStore.NewSession(user.Username)
+        s.setSessionCookie(w, token)
+        log.Printf("[entropy] auth: admin user %q created via setup", user.Username)
+        writeJSON(w, http.StatusCreated, map[string]any{"user": user, "token": token})
+}
+
+// handleLogin authenticates a user and creates a session.
+// POST /api/login {"username": "...", "password": "..."}
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+                http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+                return
+        }
+        if s.loopbackMode {
+                // In loopback mode, return a synthetic admin identity so the
+                // frontend's /me check succeeds without showing a login screen.
+                writeJSON(w, http.StatusOK, map[string]any{
+                        "username": "admin",
+                        "is_admin": true,
+                        "loopback": true,
+                })
+                return
+        }
+        var req struct {
+                Username string `json:"username"`
+                Password string `json:"password"`
+        }
+        r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "invalid body", http.StatusBadRequest)
+                return
+        }
+        user, err := s.authStore.VerifyPassword(strings.TrimSpace(req.Username), req.Password)
+        if err != nil {
+                writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid username or password"})
+                return
+        }
+        token := s.authStore.NewSession(user.Username)
+        s.setSessionCookie(w, token)
+        writeJSON(w, http.StatusOK, map[string]any{
+                "username": user.Username,
+                "is_admin": user.IsAdmin,
+        })
+}
+
+// handleLogout invalidates the current session.
+// POST /api/logout
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+                http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+                return
+        }
+        if s.loopbackMode {
+                writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+                return
+        }
+        if cookie, err := r.Cookie(sessionCookieName); err == nil {
+                s.authStore.DeleteSession(cookie.Value)
+        }
+        s.setSessionCookie(w, "") // clear
+        writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleMe returns the current authenticated user's identity.
+// GET /api/me
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodGet {
                 http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
                 return
         }
-        seed := themereader.GetSystemAccentColor()
-        source := themereader.GetSystemAccentSource()
+        if s.loopbackMode {
+                writeJSON(w, http.StatusOK, map[string]any{
+                        "username": "admin",
+                        "is_admin": true,
+                        "loopback": true,
+                })
+                return
+        }
+        // If we get here, the auth middleware has already validated the session
+        // and injected the user into context. But /api/me is exempt from auth
+        // middleware (so the frontend can check login state without a 401), so
+        // we need to read the cookie ourselves here.
+        user := currentUser(s, r)
+        if user == nil {
+                writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "not authenticated"})
+                return
+        }
         writeJSON(w, http.StatusOK, map[string]any{
-                "seed":     seed,
-                "platform": runtime.GOOS,
-                "source":   source,
+                "username": user.Username,
+                "is_admin": user.IsAdmin,
         })
+}
+
+// handleUsers manages user accounts (admin only).
+// GET /api/users — list all users
+// POST /api/users {"username": "...", "password": "...", "is_admin": false} — create user
+// DELETE /api/users/{username} — delete a non-last-admin user
+func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
+        if s.loopbackMode {
+                http.Error(w, "user management not available in loopback mode", http.StatusBadRequest)
+                return
+        }
+        switch r.Method {
+        case http.MethodGet:
+                users, err := s.authStore.List()
+                if err != nil {
+                        writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+                        return
+                }
+                writeJSON(w, http.StatusOK, map[string]any{"users": users})
+        case http.MethodPost:
+                var req struct {
+                        Username string `json:"username"`
+                        Password string `json:"password"`
+                        IsAdmin  bool   `json:"is_admin"`
+                }
+                r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+                if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                        http.Error(w, "invalid body", http.StatusBadRequest)
+                        return
+                }
+                user, err := s.authStore.Create(strings.TrimSpace(req.Username), req.Password, req.IsAdmin)
+                if err != nil {
+                        writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+                        return
+                }
+                log.Printf("[entropy] auth: user %q created (admin=%v)", user.Username, user.IsAdmin)
+                writeJSON(w, http.StatusCreated, map[string]any{"user": user})
+        case http.MethodDelete:
+                username := strings.TrimPrefix(r.URL.Path, "/api/users/")
+                username = strings.TrimSpace(username)
+                if username == "" {
+                        writeJSON(w, http.StatusBadRequest, map[string]any{"error": "username required"})
+                        return
+                }
+                if err := s.authStore.Delete(username); err != nil {
+                        writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+                        return
+                }
+                log.Printf("[entropy] auth: user %q deleted", username)
+                writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+        default:
+                http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        }
+}
+
+// setSessionCookie is a helper that sets (or clears) the session cookie.
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
+        maxAge := auth.SessionMaxAge
+        if token == "" {
+                maxAge = -1 // clear
+        }
+        http.SetCookie(w, &http.Cookie{
+                Name:     sessionCookieName,
+                Value:    token,
+                Path:     "/",
+                MaxAge:   int(maxAge.Seconds()),
+                HttpOnly: true,
+                Secure:   s.secureCookie,
+                SameSite: http.SameSiteLaxMode,
+        })
+}
+
+// currentUser returns the authenticated user for the request, either from the
+// auth middleware's context injection (for protected endpoints) or by reading
+// the session cookie directly (for exempt endpoints like /api/me).
+func currentUser(s *Server, r *http.Request) *auth.User {
+        // Try context first (set by withAuthAndAdminRoles middleware).
+        if u := auth.FromRequest(r); u != nil {
+                return u
+        }
+        // Fallback: read cookie directly (for exempt paths).
+        if s.authStore != nil {
+                if cookie, err := r.Cookie(sessionCookieName); err == nil {
+                        if username, ok := s.authStore.VerifySession(cookie.Value); ok {
+                                if u, err := s.authStore.Get(username); err == nil {
+                                        return &u
+                                }
+                        }
+                }
+        }
+        return nil
+}
+
+// requestOwner returns the owner scope for job operations on this request.
+// Returns "" (admin/loopback — sees all jobs) if the caller is an admin or in
+// loopback mode, otherwise the caller's username.
+func requestOwner(s *Server, r *http.Request) string {
+        if s.loopbackMode {
+                return ""
+        }
+        u := currentUser(s, r)
+        if u == nil {
+                return ""
+        }
+        if u.IsAdmin {
+                return ""
+        }
+        return u.Username
 }
 
 // embeddedSPAHandler serves the embedded React build with SPA fallback.
@@ -1013,7 +1477,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
         }
 
         // Cap concurrent SSE subscriptions to prevent memory exhaustion.
-        subID, ch, err := s.mgr.Subscribe()
+	subID, ch, err := s.mgr.Subscribe(requestOwner(s, r))
         if err != nil {
                 http.Error(w, err.Error(), http.StatusServiceUnavailable)
                 return
@@ -1026,7 +1490,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("X-Accel-Buffering", "no")
 
         // Send initial snapshot
-        snap := jobs.Event{Type: "snapshot", Jobs: s.mgr.List()}
+	snap := jobs.Event{Type: "snapshot", Jobs: s.mgr.List(requestOwner(s, r))}
         writeSSE(w, snap)
         flusher.Flush()
 
@@ -1094,23 +1558,29 @@ func withSessionCookie(srv *Server, h http.Handler) http.Handler {
         })
 }
 
-func withCORS(port string, h http.Handler) http.Handler {
-        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-                // Only allow requests from the exact localhost origin on our port.
-                origin := r.Header.Get("Origin")
-                allowed1 := "http://127.0.0.1:" + port
-                allowed2 := "http://localhost:" + port
-                if origin == allowed1 || origin == allowed2 {
-                        w.Header().Set("Access-Control-Allow-Origin", origin)
-                        w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-                        w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-                }
-                if r.Method == http.MethodOptions {
-                        w.WriteHeader(http.StatusNoContent)
-                        return
-                }
-                h.ServeHTTP(w, r)
-        })
+func withCORS(port, scheme string, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		allowed := []string{
+			"http://127.0.0.1:" + port,
+			"http://localhost:" + port,
+			scheme + "://127.0.0.1:" + port,
+			scheme + "://localhost:" + port,
+		}
+		for _, a := range allowed {
+			if origin == a {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+				break
+			}
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func withLogging(h http.Handler) http.Handler {
@@ -1142,14 +1612,14 @@ func withSecurityHeaders(h http.Handler) http.Handler {
         })
 }
 
-// withRateLimit applies token-bucket rate limiting to all requests except SSE and health.
+// withRateLimit applies token-bucket rate limiting to all requests except SSE, health, and media streaming.
 func withRateLimit(h http.Handler, limiter *ratelimit.Limiter) http.Handler {
-        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-                // SSE and health endpoints are exempt
-                if r.URL.Path == "/api/jobs/stream" || r.URL.Path == "/api/health" {
-                        h.ServeHTTP(w, r)
-                        return
-                }
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// SSE, health, and file-streaming endpoints are exempt
+		if r.URL.Path == "/api/jobs/stream" || r.URL.Path == "/api/health" || r.URL.Path == "/api/library/file" {
+			h.ServeHTTP(w, r)
+			return
+		}
                 if !limiter.Allow() {
                         w.Header().Set("Content-Type", "application/json")
                         w.Header().Set("Retry-After", "1")
@@ -1157,6 +1627,98 @@ func withRateLimit(h http.Handler, limiter *ratelimit.Limiter) http.Handler {
                         json.NewEncoder(w).Encode(map[string]any{"error": "rate limit exceeded"})
                         return
                 }
+                h.ServeHTTP(w, r)
+        })
+}
+
+// withAuthAndAdminRoles wraps the handler chain with authentication and admin-only
+// enforcement for the network (non-loopback) case. This is NOT used on loopback.
+//
+// Endpoint categories:
+//   - Exempt (no auth needed): /health, /setup, /login, /me, static assets
+//   - Any authenticated user: /config, /search, /clean-url, /jobs*, /logs,
+//     /import, /stats, /theme, /onboarding
+//   - Admin only: /settings (POST), /concurrency, /bandwidth, /smart-routing,
+//     /shutdown, /tools/update, /env, /users
+//
+// The SSE stream (/api/jobs/stream) is a special case: EventSource cannot set
+// custom headers, so auth relies entirely on the session cookie which browsers
+// send automatically on same-origin requests. The middleware reads the cookie
+// here and validates it — no special handling needed.
+func withAuthAndAdminRoles(as *auth.Store, cookieName string, h http.Handler) http.Handler {
+        // Paths that never require auth.
+        exemptPaths := map[string]bool{
+                "/api/health": true,
+                "/api/setup":  true,
+                "/api/login":  true,
+                "/api/me":     true, // used by frontend to check auth state
+        }
+
+        // Paths that require admin role. Everything else under /api/* just needs
+        // any valid session.
+        adminPaths := map[string]bool{
+                "/api/settings":       true, // POST changes server config
+                "/api/concurrency":    true,
+                "/api/bandwidth":      true,
+                "/api/smart-routing":  true,
+                "/api/shutdown":       true,
+                "/api/tools/update":   true,
+                "/api/env":            true, // leaks system info
+                "/api/users":          true, // user management
+        }
+
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                path := r.URL.Path
+
+                // Exempt paths pass through.
+                if exemptPaths[path] {
+                        h.ServeHTTP(w, r)
+                        return
+                }
+
+                // Static assets (no /api/ prefix) pass through — the SPA must load
+                // so the login page can render.
+                if !strings.HasPrefix(path, "/api/") {
+                        h.ServeHTTP(w, r)
+                        return
+                }
+
+                // Read session cookie.
+                cookie, err := r.Cookie(cookieName)
+                if err != nil {
+                        writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "authentication required"})
+                        return
+                }
+
+                username, ok := as.VerifySession(cookie.Value)
+                if !ok {
+                        // Clear the bad cookie so the frontend knows to re-login.
+                        http.SetCookie(w, &http.Cookie{
+                                Name:   cookieName,
+                                Value:  "",
+                                MaxAge: -1,
+                                Path:   "/",
+                        })
+                        writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "session expired"})
+                        return
+                }
+
+                // Load user record.
+                user, err := as.Get(username)
+                if err != nil {
+                        as.DeleteSession(cookie.Value)
+                        writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "user no longer exists"})
+                        return
+                }
+
+                // Check admin-only enforcement.
+                if adminPaths[path] && !user.IsAdmin {
+                        writeJSON(w, http.StatusForbidden, map[string]any{"error": "admin access required"})
+                        return
+                }
+
+                // Inject user into context so handlers can identify the caller.
+                r = auth.WithUser(r, &user)
                 h.ServeHTTP(w, r)
         })
 }

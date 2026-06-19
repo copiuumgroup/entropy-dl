@@ -28,9 +28,11 @@ import SearchPanel from './components/SearchPanel';
 import LinksPanel from './components/LinksPanel';
 import JobCard from './components/JobCard';
 import SettingsPanel from './components/SettingsPanel';
+import LibraryPanel from './components/LibraryPanel';
+import UsersPanel from './components/UsersPanel';
 import WelcomeOverlay from './components/WelcomeOverlay';
 import LogDrawer from './components/LogDrawer';
-type ViewId = 'search' | 'queue' | 'settings' | 'log';
+type ViewId = 'search' | 'queue' | 'library' | 'settings' | 'users' | 'log';
 
 import type {
   Job,
@@ -414,6 +416,18 @@ export default function App() {
                   smartRouting={smartRouting}
                   setSmartRouting={handleSetSmartRouting}
                 />
+              </M3ViewTransition>
+            )}
+
+            {activeView === 'library' && (
+              <M3ViewTransition keyProp="library">
+                <LibraryPanel />
+              </M3ViewTransition>
+            )}
+
+            {activeView === 'users' && (
+              <M3ViewTransition keyProp="users">
+                <UsersPanel onToast={showToast} />
               </M3ViewTransition>
             )}
 

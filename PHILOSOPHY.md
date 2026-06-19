@@ -17,11 +17,18 @@ We believe that:
 2. **You own your data.** Your files should never leave your machine unless you explicitly choose to share them.
 3. **Software should be a tool, not a landlord.** Once you have the binary, it's yours. No telemetry, no DRM, no subscriptions, no forced updates.
 
+## From Single Desktop to Household
+Entropy started as a single-user desktop tool: run the binary, open `127.0.0.1:8001`, download. That experience is sacred and will never change — it is the default, and it requires zero configuration.
+
+But the same hardware you own is often shared. A home server, an old laptop in the closet, a media box under the TV — these are all *your* machines, on *your* network. Entropy's homelab mode lets the same single binary serve every device in the house, behind TLS and named accounts, with no cloud in the loop.
+
+The key design principle here is **opt-in exposure with safe defaults**: binding to the network is never accidental. The guard refuses to start unless TLS and auth are both configured, so the friction-free desktop story is preserved while the multi-device story is a deliberate, hardened choice.
+
 ## Design as a Feature
 Local utilities shouldn't look or feel like second-class citizens. Entropy brings the polish, fluid animations, and dynamic theming (Material You) expected from top-tier mobile and web applications to the desktop environment. Beautiful software encourages exploration and makes complex tasks approachable.
 
 ## The Web as a Universal UI
-By leveraging modern web technologies (Go + React + Vite) inside a self-contained, single-binary distribution, Entropy ensures that the application runs natively and identically across Linux, Windows, and macOS, without the bloat of an Electron wrapper.
+By leveraging modern web technologies (Go + React + Vite) inside a self-contained, single-binary distribution, Entropy ensures that the application runs natively and identically across Linux, Windows, and macOS, without the bloat of an Electron wrapper — and equally well on a phone browser pointed at a homelab server.
 
 ## Summary
-Entropy is a love letter to the power user, and an olive branch to the everyday user. It is local, private, beautifully designed, and fiercely independent.
+Entropy is a love letter to the power user, and an olive branch to the everyday user. It is local, private, beautifully designed, and fiercely independent — equally at home on a single laptop or serving a whole household.

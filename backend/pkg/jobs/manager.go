@@ -71,6 +71,7 @@ type Job struct {
         Stage      string    `json:"stage"` // human-readable
         Error      string    `json:"error"`
         OutputFile string    `json:"output_file"`
+        Owner      string    `json:"owner,omitempty"` // username of the job's owner; "" = system/loopback
         Options    Options   `json:"options"`
         CreatedAt  time.Time `json:"created_at"`
         UpdatedAt  time.Time `json:"updated_at"`
@@ -96,11 +97,20 @@ type Event struct {
 
 type LogLine struct {
         JobID string    `json:"job_id"`
+        Owner string    `json:"owner,omitempty"` // owner of the job this log belongs to
         Line  string    `json:"line"`
         Time  time.Time `json:"time"`
 }
 
 // Manager owns the job queue and workers.
+// subscriber wraps an SSE channel with an owner filter.
+// ownerFilter == "" means "see everything" (admin / loopback mode).
+// Any other value means the subscriber only receives events for their own jobs.
+type subscriber struct {
+        ch   chan Event
+        owner string
+}
+
 type Manager struct {
         mu            sync.RWMutex
         jobs          map[string]*Job
@@ -109,7 +119,7 @@ type Manager struct {
         closed        bool // set by Close() to prevent new enqueue after shutdown
         logs          []LogLine
         subsMu        sync.RWMutex
-        subs          map[string]chan Event
+        subs          map[string]*subscriber
         ytdlp         string
         aria2c        string
         ffmpeg        string
@@ -144,7 +154,7 @@ func NewManager(ytdlpBin, aria2cBin, ffmpegBin, audioDir, videoDir string, worke
                 order:   []string{},
                 queue:   make(chan string, 1024),
                 logs:    make([]LogLine, 0, 1024),
-                subs:    map[string]chan Event{},
+                subs:    map[string]*subscriber{},
                 ytdlp:   ytdlpBin,
                 aria2c:  aria2cBin,
                 ffmpeg:  ffmpegBin,
@@ -301,9 +311,10 @@ func (m *Manager) AttachPersistence(save func(j *Job), del func(id string), rest
 
 // --- Subscriptions ---
 
-// Subscribe creates a new SSE subscription. Returns an error if too many
-// concurrent subscriptions exist (FIX #7: prevent memory exhaustion).
-func (m *Manager) Subscribe() (string, chan Event, error) {
+// Subscribe creates a new SSE subscription. ownerFilter "" means admin/loopback
+// (receives all events); any other value scopes events to that owner only.
+// Returns an error if too many concurrent subscriptions exist.
+func (m *Manager) Subscribe(ownerFilter string) (string, chan Event, error) {
         id := uuid.NewString()
         ch := make(chan Event, 128)
         m.subsMu.Lock()
@@ -311,32 +322,102 @@ func (m *Manager) Subscribe() (string, chan Event, error) {
         if len(m.subs) >= maxSubscriptions {
                 return "", nil, fmt.Errorf("too many concurrent subscriptions (max %d)", maxSubscriptions)
         }
-        m.subs[id] = ch
+        m.subs[id] = &subscriber{ch: ch, owner: ownerFilter}
         return id, ch, nil
 }
 
 func (m *Manager) Unsubscribe(id string) {
         m.subsMu.Lock()
-        if ch, ok := m.subs[id]; ok {
-                close(ch)
+        if sub, ok := m.subs[id]; ok {
+                close(sub.ch)
                 delete(m.subs, id)
         }
         m.subsMu.Unlock()
 }
 
+// broadcast sends an event to every subscriber whose owner filter matches.
+// For job events, the subscriber receives it if they're an admin (owner=="")
+// or if the job's owner matches their filter. For log events, same logic but
+// using the log line's owner. For snapshot events, each subscriber gets their
+// own filtered list (handled separately by broadcastSnapshot).
 func (m *Manager) broadcast(e Event) {
         m.subsMu.RLock()
         defer m.subsMu.RUnlock()
-        for _, ch := range m.subs {
+        for _, sub := range m.subs {
+                if !eventMatchesOwner(e, sub.owner) {
+                        continue
+                }
                 select {
-                case ch <- e:
+                case sub.ch <- e:
                 default:
                 }
         }
 }
 
+// eventMatchesOwner returns true if a subscriber with the given owner filter
+// should receive this event. Admin subscribers (owner=="") receive everything.
+func eventMatchesOwner(e Event, ownerFilter string) bool {
+        if ownerFilter == "" {
+                return true // admin / loopback sees all
+        }
+        switch e.Type {
+        case "job":
+                if e.Job != nil {
+                        return e.Job.Owner == ownerFilter
+                }
+        case "log":
+                if e.Log != nil {
+                        return e.Log.Owner == ownerFilter
+                }
+        case "snapshot":
+                // Snapshots are handled by broadcastSnapshot per-subscriber; a
+                // plain snapshot broadcast (global) is only sent to admins.
+                return false
+        }
+        return true
+}
+
+// broadcastSnapshot sends each subscriber a snapshot filtered to their owner.
+// Admin/loopback subscribers get all jobs; regular users get only their own.
+func (m *Manager) broadcastSnapshot() {
+        all := m.List("")
+        m.subsMu.RLock()
+        defer m.subsMu.RUnlock()
+        for _, sub := range m.subs {
+                jobs := all
+                if sub.owner != "" {
+                        jobs = filterByOwner(all, sub.owner)
+                }
+                select {
+                case sub.ch <- Event{Type: "snapshot", Jobs: jobs}:
+                default:
+                }
+        }
+}
+
+// filterByOwner returns only jobs whose Owner matches (or is "" for legacy).
+// Legacy/system jobs (Owner=="") are visible to everyone to avoid surprise
+// disappearing data for users who created jobs before auth existed.
+func filterByOwner(jobs []*Job, owner string) []*Job {
+        var out []*Job
+        for _, j := range jobs {
+                if j.Owner == "" || j.Owner == owner {
+                        out = append(out, j)
+                }
+        }
+        return out
+}
+
 func (m *Manager) appendLog(jobID, line string) {
-        ll := LogLine{JobID: jobID, Line: line, Time: time.Now()}
+        // Look up the job's owner so log events can be scoped per-subscriber.
+        m.mu.RLock()
+        var owner string
+        if j, ok := m.jobs[jobID]; ok {
+                owner = j.Owner
+        }
+        m.mu.RUnlock()
+
+        ll := LogLine{JobID: jobID, Owner: owner, Line: line, Time: time.Now()}
         m.mu.Lock()
         m.logs = append(m.logs, ll)
         if len(m.logs) > 5000 {
@@ -377,12 +458,18 @@ func (m *Manager) updateJob(j *Job) {
 
 // --- Public API ---
 
-func (m *Manager) List() []*Job {
+// List returns all jobs visible to the given owner.
+// owner == "" means admin/loopback (all jobs); otherwise only that owner's
+// jobs (plus legacy Owner=="" jobs) are returned.
+func (m *Manager) List(owner string) []*Job {
         m.mu.RLock()
         defer m.mu.RUnlock()
         out := make([]*Job, 0, len(m.order))
         for _, id := range m.order {
                 if j, ok := m.jobs[id]; ok {
+                        if owner != "" && j.Owner != "" && j.Owner != owner {
+                                continue
+                        }
                         cp := *j
                         out = append(out, &cp)
                 }
@@ -390,25 +477,43 @@ func (m *Manager) List() []*Job {
         return out
 }
 
-func (m *Manager) RecentLogs(limit int) []LogLine {
+// RecentLogs returns the most recent log lines visible to the given owner.
+func (m *Manager) RecentLogs(limit int, owner string) []LogLine {
         m.mu.RLock()
         defer m.mu.RUnlock()
         if limit <= 0 || limit > len(m.logs) {
                 limit = len(m.logs)
         }
-        cp := make([]LogLine, limit)
-        copy(cp, m.logs[len(m.logs)-limit:])
-        return cp
+        var out []LogLine
+        // Walk backwards from the most recent so we fill the limit with the
+        // newest visible lines for this owner.
+        for i := len(m.logs) - 1; i >= 0 && len(out) < limit; i-- {
+                ll := m.logs[i]
+                if owner != "" && ll.Owner != "" && ll.Owner != owner {
+                        continue
+                }
+                out = append(out, ll)
+        }
+        // Reverse to chronological order
+        for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+                out[i], out[j] = out[j], out[i]
+        }
+        return out
 }
 
-// IsDuplicateURL returns true if the URL was already downloaded successfully.
+// IsDuplicateURL returns true if the URL was already downloaded successfully
+// by the given owner. owner == "" checks all jobs (admin/loopback).
 // Exported for use by the import endpoint in main.go.
-func (m *Manager) IsDuplicateURL(u string) bool {
+func (m *Manager) IsDuplicateURL(u, owner string) bool {
         m.mu.RLock()
         defer m.mu.RUnlock()
         for _, id := range m.order {
                 j, ok := m.jobs[id]
                 if !ok || j.Status != StatusDone {
+                        continue
+                }
+                // Admin sees all; regular users see their own + legacy jobs.
+                if owner != "" && j.Owner != "" && j.Owner != owner {
                         continue
                 }
                 if j.URL == u {
@@ -418,16 +523,20 @@ func (m *Manager) IsDuplicateURL(u string) bool {
         return false
 }
 
-// DuplicateCount returns how many URLs in the given list already exist as done jobs.
+// DuplicateCount returns how many URLs in the given list already exist as done
+// jobs for the given owner. owner == "" counts across all jobs (admin/loopback).
 // Uses a set for O(n) lookup instead of O(n²).
-func (m *Manager) DuplicateCount(urls []string) int {
+func (m *Manager) DuplicateCount(urls []string, owner string) int {
         m.mu.RLock()
         defer m.mu.RUnlock()
-        // Build a set of done-job URLs
+        // Build a set of done-job URLs visible to this owner
         doneURLs := make(map[string]struct{}, len(m.order))
         for _, id := range m.order {
                 j, ok := m.jobs[id]
                 if !ok || j.Status != StatusDone {
+                        continue
+                }
+                if owner != "" && j.Owner != "" && j.Owner != owner {
                         continue
                 }
                 doneURLs[j.URL] = struct{}{}
@@ -442,7 +551,9 @@ func (m *Manager) DuplicateCount(urls []string) int {
 }
 
 // AddURLs queues one or more URLs. Playlists are expanded.
-func (m *Manager) AddURLs(ctx context.Context, urls []string, opts Options) ([]*Job, error) {
+// AddURLs queues one or more URLs. Playlists are expanded. owner tags each
+// created job ("" = system/loopback).
+func (m *Manager) AddURLs(ctx context.Context, urls []string, opts Options, owner string) ([]*Job, error) {
         if opts.AudioDir == "" {
                 opts.AudioDir = m.audioDir
         }
@@ -465,7 +576,7 @@ func (m *Manager) AddURLs(ctx context.Context, urls []string, opts Options) ([]*
 			continue
 		}
 		// Dedup: skip if this URL was already successfully downloaded
-		if m.IsDuplicateURL(u) {
+		if m.IsDuplicateURL(u, owner) {
 			continue
 		}
 		// Probe to expand playlists/albums (e.g. a 65-track SoundCloud set).
@@ -486,7 +597,7 @@ func (m *Manager) AddURLs(ctx context.Context, urls []string, opts Options) ([]*
 					mt := DetectMediaType("", u, 0)
 					itemOpts = opts.WithMediaType(mt)
 				}
-				j := m.newJobCtx(ctx, u, "", "", "", 0, itemOpts)
+				j := m.newJobCtx(ctx, u, "", "", "", 0, itemOpts, owner)
 			created = append(created, j)
 			continue
 		}
@@ -502,7 +613,7 @@ func (m *Manager) AddURLs(ctx context.Context, urls []string, opts Options) ([]*
 				if jurl == "" {
 					jurl = u
 				}
-				if m.IsDuplicateURL(jurl) {
+				if m.IsDuplicateURL(jurl, owner) {
 					continue
 				}
 				// Smart routing: detect content type and adjust format/dir per-item.
@@ -511,15 +622,16 @@ func (m *Manager) AddURLs(ctx context.Context, urls []string, opts Options) ([]*
 					mt := DetectMediaType(meta.Extractor, jurl, meta.Duration)
 					itemOpts = opts.WithMediaType(mt)
 				}
-				j := m.newJobCtx(ctx, jurl, meta.Title, meta.Uploader, meta.Thumbnail, meta.Duration, itemOpts)
+				j := m.newJobCtx(ctx, jurl, meta.Title, meta.Uploader, meta.Thumbnail, meta.Duration, itemOpts, owner)
 			created = append(created, j)
 		}
 	}
 	return created, nil
 }
 
-// AddDirect creates one job per URL with provided title (no probing).
-func (m *Manager) AddDirect(items []DirectItem, opts Options) []*Job {
+// AddDirect creates one job per URL with provided title (no probing). owner
+// tags each created job ("" = system/loopback).
+func (m *Manager) AddDirect(items []DirectItem, opts Options, owner string) []*Job {
         if opts.AudioDir == "" {
                 opts.AudioDir = m.audioDir
         }
@@ -534,7 +646,7 @@ func (m *Manager) AddDirect(items []DirectItem, opts Options) []*Job {
                 if u == "" {
                         continue
                 }
-                if m.IsDuplicateURL(u) {
+                if m.IsDuplicateURL(u, owner) {
                         continue
                 }
                 // Smart routing: detect content type from URL + duration (no extractor).
@@ -543,7 +655,7 @@ func (m *Manager) AddDirect(items []DirectItem, opts Options) []*Job {
                         mt := DetectMediaType("", u, it.Duration)
                         itemOpts = opts.WithMediaType(mt)
                 }
-                j := m.newJob(u, it.Title, it.Uploader, it.Thumbnail, it.Duration, itemOpts)
+                j := m.newJob(u, it.Title, it.Uploader, it.Thumbnail, it.Duration, itemOpts, owner)
                 created = append(created, j)
         }
         return created
@@ -557,13 +669,13 @@ type DirectItem struct {
         Duration  float64 `json:"duration"`
 }
 
-func (m *Manager) newJob(u, title, uploader, thumb string, duration float64, opts Options) *Job {
-	return m.newJobCtx(context.Background(), u, title, uploader, thumb, duration, opts)
+func (m *Manager) newJob(u, title, uploader, thumb string, duration float64, opts Options, owner string) *Job {
+	return m.newJobCtx(context.Background(), u, title, uploader, thumb, duration, opts, owner)
 }
 
 // newJobCtx is like newJob but plumbs a context into the enqueue step so a
 // full queue (or an aborted request) can't block the caller forever.
-func (m *Manager) newJobCtx(ctx context.Context, u, title, uploader, thumb string, duration float64, opts Options) *Job {
+func (m *Manager) newJobCtx(ctx context.Context, u, title, uploader, thumb string, duration float64, opts Options, owner string) *Job {
 	j := &Job{
 		ID:        uuid.NewString(),
 		URL:       u,
@@ -573,6 +685,7 @@ func (m *Manager) newJobCtx(ctx context.Context, u, title, uploader, thumb strin
 		Duration:  duration,
 		Status:    StatusQueued,
 		Stage:     "queued",
+		Owner:     owner,
 		Options:   opts,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -589,20 +702,31 @@ func (m *Manager) newJobCtx(ctx context.Context, u, title, uploader, thumb strin
 	return j
 }
 
-func (m *Manager) Get(id string) (*Job, bool) {
+// Get returns a copy of the job if it exists and is visible to the given owner.
+// owner == "" (admin/loopback) can see any job.
+func (m *Manager) Get(id, owner string) (*Job, bool) {
         m.mu.RLock()
         defer m.mu.RUnlock()
         j, ok := m.jobs[id]
         if !ok {
                 return nil, false
         }
+        if owner != "" && j.Owner != "" && j.Owner != owner {
+                return nil, false
+        }
         return jobCopy(j), true
 }
 
-func (m *Manager) Retry(id string) bool {
+// Retry re-queues a failed/canceled job. owner == "" (admin) can retry any job;
+// otherwise only the owner's job can be retried.
+func (m *Manager) Retry(id, owner string) bool {
         m.mu.Lock()
         j, ok := m.jobs[id]
         if !ok {
+                m.mu.Unlock()
+                return false
+        }
+        if owner != "" && j.Owner != "" && j.Owner != owner {
                 m.mu.Unlock()
                 return false
         }
@@ -624,13 +748,17 @@ func (m *Manager) Retry(id string) bool {
 	return true
 }
 
-// RetryAllFailed re-queues all failed and canceled jobs. Returns count of retried jobs.
-func (m *Manager) RetryAllFailed() int {
+// RetryAllFailed re-queues all failed and canceled jobs visible to owner.
+// owner == "" retries all (admin/loopback). Returns count of retried jobs.
+func (m *Manager) RetryAllFailed(owner string) int {
         m.mu.Lock()
         var ids []string
         for _, id := range m.order {
                 j, ok := m.jobs[id]
                 if !ok {
+                        continue
+                }
+                if owner != "" && j.Owner != "" && j.Owner != owner {
                         continue
                 }
                 if j.Status == StatusFailed || j.Status == StatusCanceled {
@@ -660,10 +788,16 @@ func (m *Manager) RetryAllFailed() int {
 	return len(ids)
 }
 
-func (m *Manager) Remove(id string) bool {
+// Remove deletes a job. owner == "" (admin) can remove any job; otherwise only
+// the owner's job can be removed. Sends a per-subscriber filtered snapshot.
+func (m *Manager) Remove(id, owner string) bool {
         m.mu.Lock()
         j, ok := m.jobs[id]
         if !ok {
+                m.mu.Unlock()
+                return false
+        }
+        if owner != "" && j.Owner != "" && j.Owner != owner {
                 m.mu.Unlock()
                 return false
         }
@@ -682,17 +816,23 @@ func (m *Manager) Remove(id string) bool {
         if m.deleteJob != nil {
                 m.deleteJob(id)
         }
-        m.broadcast(Event{Type: "snapshot", Jobs: m.List()})
+        m.broadcastSnapshot()
         return true
 }
 
-func (m *Manager) Clear(kind string) int {
+// Clear bulk-removes jobs by status, scoped to owner ("" = all).
+// Sends a per-subscriber filtered snapshot.
+func (m *Manager) Clear(kind, owner string) int {
         m.mu.Lock()
         var keep []string
         var removed int
         var deletedIDs []string
         for _, id := range m.order {
                 j := m.jobs[id]
+                if owner != "" && j.Owner != "" && j.Owner != owner {
+                        keep = append(keep, id)
+                        continue
+                }
                 if (kind == "completed" && j.Status == StatusDone) ||
                         (kind == "failed" && (j.Status == StatusFailed || j.Status == StatusCanceled)) {
                         delete(m.jobs, id)
@@ -710,7 +850,7 @@ func (m *Manager) Clear(kind string) int {
                         m.deleteJob(id)
                 }
         }
-        m.broadcast(Event{Type: "snapshot", Jobs: m.List()})
+        m.broadcastSnapshot()
         return removed
 }
 // cleanupPartialFiles deletes .part and .ytdl files associated with a canceled or removed job.
@@ -1178,12 +1318,11 @@ type ErrorCount struct {
         Count int    `json:"count"`
 }
 
-// Stats returns aggregate statistics about all jobs.
-func (m *Manager) Stats() Stats {
+// Stats returns aggregate statistics about jobs visible to owner ("" = all).
+func (m *Manager) Stats(owner string) Stats {
         m.mu.RLock()
         defer m.mu.RUnlock()
         s := Stats{
-                Total:   len(m.order),
                 Workers: m.workers,
         }
         errMap := make(map[string]int)
@@ -1192,6 +1331,10 @@ func (m *Manager) Stats() Stats {
                 if !ok {
                         continue
                 }
+                if owner != "" && j.Owner != "" && j.Owner != owner {
+                        continue
+                }
+                s.Total++
                 switch j.Status {
                 case StatusQueued:
                         s.Queued++

@@ -130,6 +130,47 @@ export interface ClearJobsResponse {
   removed: number;
 }
 
+// ─── Auth ───
+
+export interface AuthUser {
+  username: string;
+  is_admin: boolean;
+  loopback?: boolean;
+}
+
+export interface SetupResponse {
+  user: AuthUser;
+  token: string;
+}
+
+// User is a named account as returned by GET /api/users. The backend nulls
+// password_hash before serialization, so it's omitted here.
+export interface User {
+  username: string;
+  is_admin: boolean;
+  created_at: string; // ISO 8601
+}
+
+// ─── Library ───
+
+export type LibraryRoot = 'audio' | 'video';
+
+export interface LibraryEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;       // bytes; 0 for directories
+  mod_time: string;   // ISO 8601
+  ext: string;        // lowercase extension without dot, '' for dirs
+}
+
+export interface LibraryRoots {
+  audio: LibraryEntry[];
+  video: LibraryEntry[];
+  audio_error?: string;
+  video_error?: string;
+}
+
 // ─── Component Props ───
 
 export interface AsciiSpinnerProps {

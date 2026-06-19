@@ -1,8 +1,9 @@
 import { M3NavRailIndicator } from './m3';
 import { Ripple } from './Ripple';
+import { useAuth } from '../lib/auth-context';
 import BrandMarkIcon from './BrandMarkIcon';
 
-type ViewId = 'search' | 'queue' | 'settings' | 'log';
+type ViewId = 'search' | 'queue' | 'library' | 'settings' | 'users' | 'log';
 
 interface NavigationRailProps {
   active: ViewId;
@@ -10,15 +11,30 @@ interface NavigationRailProps {
   queueCount?: number; // badge count for queue
 }
 
-const DESTINATIONS = [
+// The full set of destinations. The "users" entry is filtered out at render
+// time for non-admins and in loopback mode (see below), so the nav-rail
+// indicator stays correctly positioned by index.
+const ALL_DESTINATIONS = [
   { id: 'search', icon: 'search', label: 'Search' },
   { id: 'queue', icon: 'download', label: 'Queue' },
+  { id: 'library', icon: 'library_music', label: 'Library' },
   { id: 'settings', icon: 'settings', label: 'Settings' },
+  { id: 'users', icon: 'manage_accounts', label: 'Users', adminOnly: true },
   { id: 'log', icon: 'terminal', label: 'Log' },
 ] as const;
 
 export default function NavigationRail({ active, onChange, queueCount }: NavigationRailProps) {
-  const activeIndex = DESTINATIONS.findIndex((d) => d.id === active);
+  const { user } = useAuth();
+
+  // Show "Users" only to admins in non-loopback mode. Loopback mode has no
+  // user management (the backend returns 400), and regular users shouldn't
+  // see it even if the backend would reject them.
+  const canManageUsers = !!user?.is_admin && !user?.loopback;
+  const destinations = ALL_DESTINATIONS.filter(
+    (d) => !('adminOnly' in d && d.adminOnly) || canManageUsers,
+  );
+
+  const activeIndex = destinations.findIndex((d) => d.id === active);
 
   return (
     <nav className="nav-rail" aria-label="Main navigation">
@@ -32,13 +48,13 @@ export default function NavigationRail({ active, onChange, queueCount }: Navigat
         {/* Animated indicator pill */}
         <M3NavRailIndicator
           activeIndex={Math.max(0, activeIndex)}
-          count={DESTINATIONS.length}
+          count={destinations.length}
           itemHeight={56}
           gap={4}
           paddingTop={0}
         />
 
-        {DESTINATIONS.map((dest) => {
+        {destinations.map((dest) => {
           const isActive = active === dest.id;
           const showBadge = dest.id === 'queue' && queueCount !== undefined && queueCount > 0;
 

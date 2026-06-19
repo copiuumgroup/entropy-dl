@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Job, SearchResult, Settings, ClearJobsResponse } from '../types';
+import type { Job, SearchResult, Settings, ClearJobsResponse, LibraryRoots, LibraryEntry, LibraryRoot, AuthUser, SetupResponse, User } from '../types';
 
 const baseUrl = import.meta.env.VITE_BACKEND_URL || '';
 
@@ -7,6 +7,28 @@ const api = axios.create({
   baseURL: `${baseUrl}/api`,
   headers: { 'Content-Type': 'application/json' },
 });
+
+// ─── 401 Interceptor ───
+// Registers a callback that fires when any API call returns 401.
+// The LoginScreen sets this to force a re-check (which drops back to login).
+
+type AuthLostCallback = () => void;
+let _onAuthLost: AuthLostCallback | null = null;
+
+export function onAuthLost(cb: AuthLostCallback): () => void {
+  _onAuthLost = cb;
+  return () => { _onAuthLost = null; };
+}
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401 && _onAuthLost) {
+      _onAuthLost();
+    }
+    return Promise.reject(error);
+  },
+);
 
 // ─── Environment ───
 
@@ -17,6 +39,45 @@ export const fetchEnv = (): Promise<import('../types').EnvData> =>
 
 export const completeOnboarding = (): Promise<void> =>
   api.post('/onboarding').then(r => r.data);
+
+// ─── Auth ───
+
+// fetchMe checks who the current user is. Returns the AuthUser on success,
+// or throws on 401. In loopback mode the backend returns loopback:true.
+export const fetchMe = (): Promise<AuthUser> =>
+  api.get('/me').then(r => r.data);
+
+// setup creates the first admin account. Only works when no users exist
+// (returns 409 Conflict if setup already completed).
+export const setup = (username: string, password: string): Promise<SetupResponse> =>
+  api.post('/setup', { username, password }).then(r => r.data);
+
+// login authenticates with username/password. Backend sets the session cookie.
+// In loopback mode returns a synthetic admin without requiring credentials.
+export const login = (username: string, password: string): Promise<AuthUser> =>
+  api.post('/login', { username, password }).then(r => r.data);
+
+// logout invalidates the current session and clears the cookie.
+export const logout = (): Promise<void> =>
+  api.post('/logout').then(r => r.data);
+
+// ─── User management (admin only) ───
+
+// fetchUsers lists every named account. Admin-only; returns 400 in loopback mode.
+export const fetchUsers = (): Promise<User[]> =>
+  api.get('/users').then(r => r.data.users || []);
+
+// createUser adds a new account. is_admin defaults to false.
+export const createUser = ({ username, password, is_admin }: {
+  username: string;
+  password: string;
+  is_admin: boolean;
+}): Promise<User> =>
+  api.post('/users', { username, password, is_admin }).then(r => r.data.user);
+
+// deleteUser removes an account. The backend refuses to delete the last admin.
+export const deleteUser = (username: string): Promise<void> =>
+  api.delete(`/users/${encodeURIComponent(username)}`).then(r => r.data);
 
 // ─── Settings ───
 
@@ -78,5 +139,19 @@ export const updateTools = (): Promise<void> =>
 
 export const shutdown = (): Promise<void> =>
   api.post('/shutdown').then(r => r.data);
+
+// ─── Library ───
+
+export const fetchLibrary = (): Promise<LibraryRoots> =>
+  api.get('/library').then(r => r.data);
+
+export const fetchLibraryDir = (root: LibraryRoot, path: string = ''): Promise<LibraryEntry[]> =>
+  api.get('/library/dir', { params: { root, path } }).then(r => r.data.entries || []);
+
+// libraryFileURL builds a direct streaming URL for a media file. Bypasses the
+// axios instance because <audio>/<video> elements need a plain URL, and the
+// browser will send the session cookie automatically (same-origin).
+export const libraryFileURL = (root: LibraryRoot, path: string): string =>
+  `${baseUrl}/api/library/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`;
 
 export default api;

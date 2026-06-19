@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { M3Expand, M3ChipAnimated, M3SwitchAnimated, M3FadeIn } from './m3';
+import { M3Expand, M3ChipAnimated, M3SwitchAnimated, M3FadeIn, M3Stagger, M3StaggerItem } from './m3';
 import { saveOutputDirs } from '../lib/api';
 import type { SettingsPanelProps, Format, Resolution, Engine, CookiesBrowser } from '../types';
 
@@ -60,9 +60,9 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
       </div>
 
       <M3Expand expanded={expanded}>
-        <div className="settings-grid">
+        <M3Stagger className="settings-grid" staggerDelay={0.04}>
           {/* FORMAT */}
-          <div className="setting">
+          <M3StaggerItem className="setting">
             <div className="setting-label">Format</div>
             <div className="chip-row">
               {FORMATS.map((f) => (
@@ -83,10 +83,10 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
                 </div>
               </M3FadeIn>
             )}
-          </div>
+          </M3StaggerItem>
 
           {/* RESOLUTION */}
-          <div className="setting">
+          <M3StaggerItem className="setting">
             <div className="setting-label">Resolution</div>
             <div className="chip-row">
               {RESOLUTIONS.map((r) => (
@@ -105,10 +105,10 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
             {isAudio && (
               <div className="setting-hint">Width is calculated automatically. Aspect ratio is always preserved.</div>
             )}
-          </div>
+          </M3StaggerItem>
 
           {/* BITRATE */}
-          <div className="setting">
+          <M3StaggerItem className="setting">
             <div className="setting-label">Bitrate (kbps)</div>
             <div className="chip-row">
               {BITRATES.map((b) => (
@@ -122,10 +122,10 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
                 </M3ChipAnimated>
               ))}
             </div>
-          </div>
+          </M3StaggerItem>
 
           {/* CONCURRENCY */}
-          <div className="setting">
+          <M3StaggerItem className="setting">
             <div className="setting-label">Concurrency</div>
             <div className="chip-row">
               {CONCURRENCIES.map((c) => (
@@ -138,10 +138,10 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
                 </M3ChipAnimated>
               ))}
             </div>
-          </div>
+          </M3StaggerItem>
 
           {/* ENGINE */}
-          <div className="setting">
+          <M3StaggerItem className="setting">
             <div className="setting-label">Engine</div>
             <div className="chip-row">
               {ENGINES.map((e) => (
@@ -154,10 +154,10 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
                 </M3ChipAnimated>
               ))}
             </div>
-          </div>
+          </M3StaggerItem>
 
           {/* THEME PREF */}
-          <div className="setting">
+          <M3StaggerItem className="setting">
             <div className="setting-label">Appearance</div>
             <div className="chip-row">
               {(['system', 'light', 'dark'] as const).map((t) => (
@@ -170,10 +170,10 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
                 </M3ChipAnimated>
               ))}
             </div>
-          </div>
+          </M3StaggerItem>
 
           {/* COOKIES + SWITCHES */}
-          <div className="setting">
+          <M3StaggerItem className="setting">
             <div className="setting-label">Cookies from</div>
             <div className="chip-row">
               {COOKIES.map((c) => (
@@ -239,9 +239,9 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
                 </div>
               </M3FadeIn>
             )}
-          </div>
+          </M3StaggerItem>
           {/* DIRECTORIES */}
-          <div className="setting setting-full">
+          <M3StaggerItem className="setting setting-full">
             <div className="setting-label">Output directories</div>
             <div className="flex flex-col gap-2">
               <div className="dir-row">
@@ -274,8 +274,8 @@ export default function SettingsPanel({ options, setOptions, themePref, setTheme
             <div className="setting-hint">
               Saved automatically on blur. Audio formats (mp3, flac, …) go to the audio folder; video formats go to video.
             </div>
-          </div>
-        </div>
+          </M3StaggerItem>
+        </M3Stagger>
       </M3Expand>
     </section>
   );

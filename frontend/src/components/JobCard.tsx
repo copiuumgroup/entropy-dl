@@ -1,4 +1,5 @@
 import { useState, memo } from 'react';
+import { motion } from 'framer-motion';
 import type { JobCardProps } from '../types';
 import { STATUS_COLORS, STATUS_LABELS } from '../lib/utils';
 import { LinearProgress } from './LinearProgress';
@@ -35,10 +36,12 @@ const JobCard = memo(function JobCard({ job, onRetry, onRemove, onOpenFolder }: 
     : null;
 
   return (
-    <div
+    <motion.div
       className="queue-item"
       data-testid={`queue-item-${job.id}`}
       style={{ animation: 'm3-fade-in-up 0.3s cubic-bezier(0.05, 0.7, 0.1, 1.0) both' }}
+      whileTap={{ scale: 0.995 }}
+      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
     >
       {job.thumbnail ? (
         <img className="thumb" src={job.thumbnail} alt="" loading="lazy" />
@@ -165,7 +168,7 @@ const JobCard = memo(function JobCard({ job, onRetry, onRemove, onOpenFolder }: 
           <Ripple />
         </button>
       </div>
-    </div>
+    </motion.div>
   );
 });
 

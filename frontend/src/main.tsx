@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import LoginScreen from './components/LoginScreen';
 import './styles.css';
 import { generateScheme, applySchemeToCSS, DEFAULT_SEEDS, EXPRESSIVE_DEFAULT } from './lib/hct-palette';
 
@@ -28,6 +29,8 @@ try {
 const root = ReactDOM.createRoot(document.getElementById('root')!);
 root.render(
   <React.StrictMode>
-    <App />
+    <LoginScreen>
+      <App />
+    </LoginScreen>
   </React.StrictMode>
 );

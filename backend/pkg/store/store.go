@@ -50,7 +50,14 @@ func New(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
-        return s.db.Close()
+	return s.db.Close()
+}
+
+// DB exposes the underlying bbolt database so other packages (e.g. auth) can
+// create their own buckets in the same file. Callers must not close the DB —
+// that responsibility stays with the Store.
+func (s *Store) DB() *bbolt.DB {
+	return s.db
 }
 
 func (s *Store) LoadSettings() (Settings, error) {
